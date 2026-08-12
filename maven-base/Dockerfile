@@ -27,4 +27,10 @@ RUN apk add --no-cache bash curl git jq util-linux
 # container is fresh, so nothing shares the directory with anyone.
 RUN adduser -D -u 1001 build \
     && mkdir -p /workspace \
-    && chmod 1777 /workspace
+    && chmod 1777 /workspace \
+    && git config --system --add safe.directory /workspace
+# The safe.directory line is the second half of 1777: git refuses a repository whose top-level
+# directory another user owns (the CVE-2022-24765 mitigation), and /workspace is root's while a
+# `user: build` step's git runs as build — measured 2026-08-12, "detected dubious ownership".
+# System-level so both step kinds trust the one directory the daemon clones into; nothing else
+# is exempted.
