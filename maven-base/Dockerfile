@@ -20,8 +20,11 @@ RUN apk add --no-cache bash curl git jq util-linux
 # chosen is the `docker run`, which is what `user:` in a step declaration now renders.
 #
 # /workspace is created here because the ci-daemon clones into it, and a non-root container user
-# cannot make a directory at the root of the filesystem. Root steps are unaffected: they own it and
-# write anywhere regardless.
+# cannot make a directory at the root of the filesystem. It carries /tmp's mode (1777), not an
+# owner: root steps lost DAC_OVERRIDE with the rest of their capabilities, so a build-owned 755
+# directory refused THEM instead — measured 2026-08-12, every release pipeline red with
+# "/workspace/.git: Permission denied". World-writable and sticky serves both kinds of step; each
+# container is fresh, so nothing shares the directory with anyone.
 RUN adduser -D -u 1001 build \
     && mkdir -p /workspace \
-    && chown build:build /workspace
+    && chmod 1777 /workspace
