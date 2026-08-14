@@ -34,18 +34,32 @@ steps:
       # Finish every build before the first push. A build failure therefore cannot leave a partial
       # release in the registry. Registry pushes cannot be made atomic, so a later network failure
       # may still leave unannounced tags; qits-ci emits SoftwareRelease only when every push passes.
+      #
+      # ONE TAG PER BUILD, then `docker tag` for the alias. This file used to pass two `-t` flags and
+      # push both, which is the shape that failed for two siblings — `docker push` answered "tag does
+      # not exist", because BuildKit's exporter does not reliably leave every alias of a multi-tag
+      # build in the local image store (see daemons/qits-projects-daemon and images/qits-oci-workspace).
+      # Unlike those two, this repository does need both coordinates: every step in every recipe runs
+      # `qits/build-images/<image>:latest`. So the alias is made by `docker tag` against the finished
+      # build, which is a local store operation and not the exporter's job.
+      #
+      # This is the pipeline that publishes the step images themselves, so its failure blocks every
+      # other repository's builds, not just this one's — there is no run left that could fix it.
       for image in $images; do
         repository="$QITS_REGISTRY/$QITS_IMAGE_REPOSITORY/build-images/$image"
         docker build \
           -f "$image/Dockerfile" \
           -t "$repository:$version" \
-          -t "$repository:latest" \
           .
+        docker tag "$repository:$version" "$repository:latest"
       done
 
       for image in $images; do
         repository="$QITS_REGISTRY/$QITS_IMAGE_REPOSITORY/build-images/$image"
         docker push "$repository:$version"
         docker push "$repository:latest"
-        docker rmi "$repository:$version" "$repository:latest" || true
+        # NO `docker rmi`: on a CI host it frees nothing — the layers stay in the builder's cache
+        # either way — while under the containerd image store it drops the last reference to content
+        # a concurrent build of this same Dockerfile may still be resolving, which is the race that
+        # broke the release of 2026-08-11.
       done
