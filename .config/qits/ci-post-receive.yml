@@ -1,0 +1,49 @@
+# The push pipeline: build every image, and push nothing.
+#
+# WHY THERE IS NO PUSH HERE, unlike qits-oci-postgresql's. That repository builds ONE image which a
+# deployment then runs at the built sha, so a sha-tagged push is the whole contract. These five are
+# the images every OTHER repository's steps run, and the tag they are consumed under is `latest` —
+# so a push from an unreleased branch that wrote `latest` would make an unreviewed Dockerfile the
+# thing the entire platform builds on, silently, from the moment it landed. Publishing stays the
+# release pipeline's alone (`ci-event-release.yml`), which is the only place the shared CalVer
+# exists.
+#
+# So what this pipeline is for is the OTHER half of a push build: finding out that a Dockerfile
+# still builds, on the push that changed it, rather than at release time when the answer arrives
+# with nothing to do about it. That matters more here than anywhere: this repository's release is
+# the one that cannot be retried by CI if it lands broken, because the step image a retry would
+# need is the artifact the release publishes.
+#
+# BUILT, NOT PULLED, and that is the point of the exercise. These images used to exist only in the
+# host's local docker store, put there by the bootstrap, because every recipe names them
+# unqualified — so a `docker system prune` deleted the whole CI plane and only a bootstrap rerun
+# brought it back. qits-ci resolves an unqualified platform image against the registry now (see
+# CiStepImage), the release below publishes every one of them there, and this file is what keeps
+# them building between releases.
+#
+# No `--network` flag: nothing in these builds dials the platform.
+steps:
+  - image: qits/build-images/ci-base:latest
+    docker: true
+    timeout-seconds: 3600
+    script: |
+      set -eu
+
+      images='ci-base maven-base userflows-base node-base node-docker-base'
+
+      # Tagged with the sha only so the local store has a name to hold the result under; nothing is
+      # pushed and nothing named `latest` is written, so a concurrent release's `latest` is never
+      # this branch's. Kept one `-t` per build for the reason the release file argues at length:
+      # BuildKit's exporter does not reliably leave every alias of a multi-tag build in the store.
+      for image in $images; do
+        docker build \
+          -f "$image/Dockerfile" \
+          -t "qits-oci-push/$image:$QITS_CI_SHA" \
+          .
+      done
+
+      # NO `docker rmi`: on a CI host it frees nothing — the layers stay in the builder's cache
+      # either way — while under the containerd image store it drops the last reference to content
+      # a concurrent build of this same Dockerfile may still be resolving, which is the race that
+      # broke the release of 2026-08-11. Two builds of these Dockerfiles do run concurrently: this
+      # one and the release pipeline's.
