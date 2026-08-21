@@ -74,3 +74,6 @@ for i in ci-base maven-base userflows-base node-base node-docker-base; do
   docker build -t "qits/build-images/$i:latest" -f "$i/Dockerfile" .
 done
 ```
+
+The 2026.821 release republished all five images after the 2026-08-20
+prune left the registry without them; the loop above was the bridge.
