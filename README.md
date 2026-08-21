@@ -48,19 +48,26 @@ because the image happened to be in the host's local store, put there by the boo
 denied for qits/build-images/ci-base` on every build in every repository and a bootstrap rerun as
 the only recovery. It is now a pull.
 
-## Bootstrap
+## No bootstrap
 
-The release step itself runs in `qits/build-images/ci-base:latest`, so a completely fresh platform
-must seed that image before this repository can take ownership of publishing it. The platform's
-local bootstrap already does so. Once seeded, releases are self-hosting.
+**This repository's own pipelines run on `docker:28-dind`, an upstream image pulled through the
+platform's OCI mirror**, so nothing here needs one of the images it publishes. That is what makes
+these ordinary build artifacts: the platform can rebuild its own CI plane from a clone and a mirror,
+with no seeded state anywhere.
 
-**That circularity is irreducible and is not what the registry resolution fixed.** A pipeline that
-publishes the step images runs on one of them, so the very first copy has to come from outside CI.
-What changed is the blast radius of losing them *afterwards*: a host that has been pruned re-pulls
-what it lost from the registry instead of needing the bootstrap again. Seeding is a cold-start
-concern; it is no longer a recovery procedure.
+It used to run on `qits/build-images/ci-base:latest`, and the circularity that created was not
+theoretical. On 2026-08-20 a `docker system prune` reclaiming a full disk deleted all five images;
+every build in every repository then failed with `pull access denied for qits/build-images/ci-base`,
+and the pipeline that would have rebuilt them needed one of them to run. There was no run left
+anywhere on the platform that could fix it.
 
-To rebuild the whole set by hand on a host that has lost them and cannot reach the registry either:
+`docker:28-dind` is the one upstream image carrying **docker and git** together, which is the
+daemon's image contract — git plus a downloader, and busybox supplies `wget`. It has no `bash`, and
+qits-ci-daemon no longer requires one: it probes for bash, uses it when present so no existing
+pipeline changes behaviour, and falls back to `sh` when absent. Every script in this repository is
+POSIX, including the deliberate `sed`-instead-of-`jq` version parse in the release pipeline.
+
+To rebuild the whole set by hand — a cold machine with no registry and no CI:
 
 ```sh
 for i in ci-base maven-base userflows-base node-base node-docker-base; do

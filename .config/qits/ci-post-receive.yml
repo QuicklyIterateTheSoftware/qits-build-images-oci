@@ -23,7 +23,17 @@
 #
 # No `--network` flag: nothing in these builds dials the platform.
 steps:
-  - image: qits/build-images/ci-base:latest
+  - # UPSTREAM, NOT ONE OF OURS, and that is the whole point of this line. This pipeline builds the
+    # five images every other repository's steps run in; naming one of them here made them buildable
+    # only by a machine that already had them, so a `docker system prune` on 2026-08-20 deleted the
+    # platform's entire CI plane with no run left anywhere able to rebuild it.
+    #
+    # docker:28-dind is the one upstream image that carries docker AND git, which is the daemon's
+    # image contract (git plus a downloader; busybox wget is the downloader). It has no bash, which
+    # is why qits-ci-daemon stopped requiring one and runs a script under sh when bash is absent —
+    # every script in this file is POSIX. It is pulled through the platform's OCI mirror like any
+    # other library image.
+    image: docker:28-dind
     docker: true
     timeout-seconds: 3600
     script: |
