@@ -1,7 +1,15 @@
 FROM mcr.microsoft.com/playwright/java:v1.61.0-noble
 
+# `skopeo` is here for the `qits` (OCI) story category in qits-artifacts' userflows: those stories
+# drive a real `skopeo copy` push and pull against the registry process the suite launches. It is the
+# only proof in the suite that a REAL OCI client can push to and pull from that registry — every
+# other check is written from this platform's own reading of the spec, and a reading cannot disagree
+# with itself. The stories pass `--insecure-policy` deliberately: ubuntu's skopeo ships
+# `/etc/containers/policy.json` by way of containers-common, so without the flag the stories would
+# pass on a policy file this image happens to install, and the image must not be what silently makes
+# them pass.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl git jq maven \
+    && apt-get install -y --no-install-recommends curl git jq maven skopeo \
     && rm -rf /var/lib/apt/lists/*
 
 # The step-image contract maven-base wrote down, restated here because this image runs `mvn verify`
