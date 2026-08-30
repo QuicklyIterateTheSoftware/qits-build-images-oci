@@ -5,7 +5,13 @@ FROM maven:3.9-eclipse-temurin-25-alpine
 # daemon repositories' PTY suites spawn their children through the util-linux spelling. Without
 # this every one of those tests fails in CI with "setsid: unrecognized option: ctty" while passing
 # on any developer's glibc machine, which is the worst shape a test failure can have.
-RUN apk add --no-cache bash curl git jq util-linux
+# git-daemon is not the daemon: it is the Alpine package that carries
+# /usr/libexec/git-core/git-http-backend, which the `git` package here does not — Debian ships it
+# inside `git`, so a suite green on any developer machine dies in CI with the CGI child answering
+# "git: 'http-backend' is not a git command". The userflow story catalogues (qits-workspaces,
+# qits-projects) shell `git http-backend` to serve their fixture repositories over real smart HTTP,
+# and without this package every git request the packaged artifact makes answers a bare 500.
+RUN apk add --no-cache bash curl git git-daemon jq util-linux
 
 # A build user, so a step that must not be root can be STARTED as one.
 #
