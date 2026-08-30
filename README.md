@@ -1,4 +1,4 @@
-# qits-oci
+# qits-build-images-oci
 
 Build definitions for the base OCI images used by qits CI pipelines. The images live together
 because they are one platform surface and deliberately share one release version.
@@ -9,7 +9,7 @@ because they are one platform surface and deliberately share one release version
 |---|---|
 | `qits/build-images/ci-base` | Minimal Git/Bash/Docker publishing step |
 | `qits/build-images/maven-base` | Maven and JDK 25 build step |
-| `qits/build-images/userflows-base` | Maven plus the browser toolchain used by qits-userflows |
+| `qits/build-images/userflows-base` | Maven plus the browser toolchain used by qits-userflows-javalib |
 | `qits/build-images/node-base` | Node and Corepack build/publish step |
 | `qits/build-images/node-docker-base` | Node build step that can also drive the host Docker daemon |
 
