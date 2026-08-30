@@ -48,7 +48,7 @@ steps:
       for image in $images; do
         docker build \
           -f "$image/Dockerfile" \
-          -t "qits-oci-push/$image:$QITS_CI_SHA" \
+          -t "qits-build-images-oci-push/$image:$QITS_CI_SHA" \
           .
       done
 

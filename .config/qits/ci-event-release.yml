@@ -2,7 +2,10 @@
 # supplies it on SCMRelease; this repository intentionally has no language-specific version file.
 event: SCMRelease
 when:
-  - repository: { exact: qits-oci }
+  # The new repository name. `repository` on SCMRelease is the PUBLIC name — measured live on
+  # 2026-08-29, when a sibling's train followed this same field — so a rename moves this line and
+  # the pipeline stops firing the moment it does not.
+  - repository: { exact: qits-build-images-oci }
 
 # qits-ci announces one SoftwareRelease per declaration after the whole pipeline is green. Names
 # are registry-independent; the step composes the deployment-specific registry coordinates.
