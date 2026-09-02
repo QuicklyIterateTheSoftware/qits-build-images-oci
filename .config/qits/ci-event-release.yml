@@ -177,17 +177,28 @@ steps:
 
         # THE UPLOAD BORROWS A curl FROM THE IMAGE THIS RUN JUST BUILT. dind has none, and ci-base —
         # pushed a few lines above, at this very version — is the platform's answer to "a step needs
-        # curl". `--network host` because the daemon holding this socket is the one that resolved
-        # $QITS_REGISTRY for every push above.
+        # curl".
+        #
+        # IT RUNS IN THIS STEP CONTAINER'S OWN NETWORK NAMESPACE — `container:$(hostname)`, the
+        # container id — so the qits-net aliases resolve exactly as they do for every other step,
+        # and the PUT lands on the tokenless store directly. NOT `--network host`: that path goes
+        # through the edge vhost, which (correctly) 401s every sessionless write since the
+        # commissioned-credentials cutover — measured twice on 2026.902.53027. Publishes belong on
+        # qits-net, where the store's own doctrine ("no publish surface is gated piecemeal") holds;
+        # teaching this one step an edge credential would gate it piecemeal.
+        #
+        # The base is DERIVED from $QITS_NPM_REGISTRY_URL — the qits-net spelling every step
+        # carries — never from $QITS_REGISTRY, which is the host-published name for the daemon.
         #
         # THE DOCUMENT TRAVELS ON STDIN rather than on a bind mount. `docker` here is the HOST's
         # daemon through a mounted socket, while this script's working tree lives inside the step
         # container: a `-v "$PWD:/w"` would bind a host path that does not exist and hand curl an
         # empty directory. `-i` with `--data-binary @-` needs no shared filesystem at all.
-        docker run --rm -i --network host \
+        sbom_base="${QITS_NPM_REGISTRY_URL%%/artifacts/*}/artifacts/sboms"
+        docker run --rm -i --network "container:$(hostname)" \
           "$QITS_REGISTRY/$QITS_IMAGE_REPOSITORY/build-images/ci-base:$version" \
           curl -fsS -X PUT -H 'Content-Type: application/vnd.cyclonedx+json' \
           --data-binary @- \
-          "http://$QITS_REGISTRY/artifacts/sboms/docker/qits/build-images/$image/-/$version" \
+          "$sbom_base/docker/qits/build-images/$image/-/$version" \
           < "sbom-$image.json"
       done
