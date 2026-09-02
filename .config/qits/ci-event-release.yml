@@ -76,3 +76,118 @@ steps:
         # a concurrent build of this same Dockerfile may still be resolving, which is the race that
         # broke the release of 2026-08-11.
       done
+
+      # THE SBOM FOR A BASE IMAGE IS ITS `FROM` LINES, and there is nothing else it honestly could
+      # be: these five Dockerfiles add packages with `apk` and declare no manifest a scanner could
+      # read. What a consumer of a step image needs to know is which upstream it inherits and at
+      # which tag, and that is exactly one `FROM` per stage.
+      #
+      # AFTER THE PUSHES AND BEFORE GREEN, which is the ordering rule rather than a preference:
+      # qits-ci announces SoftwareRelease only for a green run, so an SBOM stored here can never be
+      # missing for a version somebody was told about. A failed PUT fails the release on purpose.
+      #
+      # HAND-BUILT WITH sed AND printf, for the same reason the version above is read with sed:
+      # docker:28-dind is an upstream image and carries no jq, no python and no curl. That constraint
+      # is the point — the pipeline that builds every other repository's step images must not need
+      # one of them to run.
+      for image in $images; do
+        root="pkg:docker/qits/build-images/$image@$version"
+
+        # A multi-stage file names its OWN earlier stages in later `FROM`s, and a stage alias is not
+        # an upstream image. Collect the aliases first so they can be skipped below.
+        stages=$(sed -n \
+          's/^[[:space:]]*[Ff][Rr][Oo][Mm][[:space:]].*[[:space:]][Aa][Ss][[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*$/\1/p' \
+          "$image/Dockerfile")
+        # Every `FROM`'s image ref: drop the keyword, drop any `--platform=`-style flag, keep the
+        # first word — which leaves the ref alone and discards a trailing `AS <stage>`.
+        bases=$(sed -n 's/^[[:space:]]*[Ff][Rr][Oo][Mm][[:space:]]\{1,\}//p' "$image/Dockerfile" \
+          | sed 's/--[^[:space:]]*[[:space:]]\{1,\}//g' \
+          | sed 's/[[:space:]].*$//')
+
+        components=''
+        depends=''
+        seen=''
+        sep=''
+        for base in $bases; do
+          for stage in $stages; do
+            if [ "$base" = "$stage" ]; then base=''; break; fi
+          done
+          [ -n "$base" ] || continue
+          # The ref reaches a JSON document and a purl, so its shape is checked the same way the
+          # version was: a reference is the registry's own charset and nothing else. Nothing but
+          # these Dockerfiles feeds this, and that is precisely why the guard is cheap to keep.
+          case "$base" in
+            ''|*[!a-zA-Z0-9._:/@-]*)
+              echo "$image/Dockerfile: unusable FROM '$base'" >&2; exit 1 ;;
+          esac
+          # DISTINCT BASES ONLY — two stages built from one upstream are one dependency.
+          case " $seen " in
+            *" $base "*) continue ;;
+          esac
+          seen="$seen $base"
+
+          case "$base" in
+            # A digest ref pins harder than a tag, so the digest IS the version.
+            *@*)
+              name=${base%@*}
+              tag=${base##*@}
+              ;;
+            *)
+              # An untagged `FROM` means `latest` by definition. The colon is not proof of a tag:
+              # a registry host may carry a port, and in `host:5000/image` the colon is the port's.
+              tag=${base##*:}
+              case "$base" in
+                *:*) : ;;
+                *) tag='' ;;
+              esac
+              case "$tag" in
+                */*) tag='' ;;
+              esac
+              if [ -n "$tag" ]; then
+                name=${base%:*}
+              else
+                name=$base
+                tag=latest
+              fi
+              ;;
+          esac
+
+          purl="pkg:docker/$name@$tag"
+          components="$components$sep$(printf \
+            '{"type":"container","bom-ref":"%s","name":"%s","version":"%s","purl":"%s"}' \
+            "$purl" "$name" "$tag" "$purl")"
+          depends="$depends$sep$(printf '"%s"' "$purl")"
+          sep=','
+        done
+        if [ -z "$components" ]; then
+          echo "$image/Dockerfile declares no base image" >&2; exit 1
+        fi
+
+        # CycloneDX 1.6: the image this run pushed as the metadata component, one container
+        # component per distinct base, and a single dependency edge from the root to all of them.
+        # Three appends rather than one unreadable format string; every value goes through `%s`, so
+        # nothing in a ref can be read as a printf directive.
+        printf '{"bomFormat":"CycloneDX","specVersion":"1.6","version":1,' > "sbom-$image.json"
+        printf '"metadata":{"component":{"type":"container","bom-ref":"%s",' \
+          "$root" >> "sbom-$image.json"
+        printf '"name":"qits/build-images/%s","version":"%s","purl":"%s"}},' \
+          "$image" "$version" "$root" >> "sbom-$image.json"
+        printf '"components":[%s],"dependencies":[{"ref":"%s","dependsOn":[%s]}]}\n' \
+          "$components" "$root" "$depends" >> "sbom-$image.json"
+
+        # THE UPLOAD BORROWS A curl FROM THE IMAGE THIS RUN JUST BUILT. dind has none, and ci-base —
+        # pushed a few lines above, at this very version — is the platform's answer to "a step needs
+        # curl". `--network host` because the daemon holding this socket is the one that resolved
+        # $QITS_REGISTRY for every push above.
+        #
+        # THE DOCUMENT TRAVELS ON STDIN rather than on a bind mount. `docker` here is the HOST's
+        # daemon through a mounted socket, while this script's working tree lives inside the step
+        # container: a `-v "$PWD:/w"` would bind a host path that does not exist and hand curl an
+        # empty directory. `-i` with `--data-binary @-` needs no shared filesystem at all.
+        docker run --rm -i --network host \
+          "$QITS_REGISTRY/$QITS_IMAGE_REPOSITORY/build-images/ci-base:$version" \
+          curl -fsS -X PUT -H 'Content-Type: application/vnd.cyclonedx+json' \
+          --data-binary @- \
+          "http://$QITS_REGISTRY/artifacts/sboms/docker/qits/build-images/$image/-/$version" \
+          < "sbom-$image.json"
+      done
