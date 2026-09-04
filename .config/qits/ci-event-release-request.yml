@@ -1,4 +1,28 @@
-# The push pipeline: build every image, and push nothing.
+# THE ONE QA PIPELINE THIS REPOSITORY HAS, and it runs for a release request and nothing else.
+#
+# There is no push pipeline any more, and `ci-post-receive.yml` is what this file replaces.
+# qits-projects keeps a backing branch `release/<id>` per open release request — an octopus merge of
+# that request's sources, refolded whenever the set changes — and publishes `ReleaseRequestChanged`
+# on every successful re-fold. The merge primitive that writes that branch fires no `post-receive`
+# and so publishes no `SCMPublishCommit`: without this file the fold exists and NOTHING BUILDS IT.
+# A fold the git host answered `unchanged`, and one that conflicted, publish nothing — so every
+# arrival here is a new sha worth a build.
+#
+# DECIDED AT MAIN, BUILT AT THE FOLD. This file is discovered, parsed and selected at `main`'s head,
+# always; only the run's branch and sha come from the payload, which is why `checkout:` names them
+# as a pair — a sha with no branch whose history holds it is not something a step container can
+# fetch. A release request therefore cannot alter the CI that gates it by folding in a commit that
+# edits this file. Inside a step, $QITS_CI_BRANCH is `release/<id>` and $QITS_CI_SHA is the merged
+# sha; the fold is already checked out, so nothing below fetches or switches refs.
+#
+# EVERY STEP HERE IS GATING, and there is no trailing `gating: false` half because this repository
+# publishes nothing from a fold. The verdict returns on the ordinary `BuildSuccessful`/`BuildFailed`
+# with `commitSha` = the merged sha, which is what qits-projects' `BuildStatusListener` matches on
+# together with `repoId`.
+#
+# ci-event-release.yml BESIDE THIS FILE IS UNTOUCHED and is still the other half: it reacts to this
+# repository's release TAG and publishes the released coordinate. This file names a build by the
+# merged sha; that one names a release by its version. Neither pushes the other's coordinate.
 #
 # WHY THERE IS NO PUSH HERE, unlike qits-oci-postgresql's. That repository builds ONE image which a
 # deployment then runs at the built sha, so a sha-tagged push is the whole contract. These five are
@@ -8,8 +32,8 @@
 # release pipeline's alone (`ci-event-release.yml`), which is the only place the shared CalVer
 # exists.
 #
-# So what this pipeline is for is the OTHER half of a push build: finding out that a Dockerfile
-# still builds, on the push that changed it, rather than at release time when the answer arrives
+# So what this pipeline is for is the OTHER half of a release: finding out that a Dockerfile still
+# builds, on the fold that carries the change, rather than at release time when the answer arrives
 # with nothing to do about it. That matters more here than anywhere: this repository's release is
 # the one that cannot be retried by CI if it lands broken, because the step image a retry would
 # need is the artifact the release publishes.
@@ -18,10 +42,23 @@
 # host's local docker store, put there by the bootstrap, because every recipe names them
 # unqualified — so a `docker system prune` deleted the whole CI plane and only a bootstrap rerun
 # brought it back. qits-ci resolves an unqualified platform image against the registry now (see
-# CiStepImage), the release below publishes every one of them there, and this file is what keeps
+# CiStepImage), ci-event-release.yml publishes every one of them there, and this file is what keeps
 # them building between releases.
 #
 # No `--network` flag: nothing in these builds dials the platform.
+
+event: ReleaseRequestChanged
+
+when:
+  # repoName, not repoId: the git host's storage coordinate is an opaque UUID since
+  # the identity cutover, so a name match on repoId is not dependable. The event
+  # echoes the public name; a rename updates this line in the same campaign.
+  - repoName: { exact: qits-build-images-oci }
+
+checkout:
+  branch: backingBranch
+  sha: mergedSha
+
 steps:
   - # UPSTREAM, NOT ONE OF OURS, and that is the whole point of this line. This pipeline builds the
     # five images every other repository's steps run in; naming one of them here made them buildable
