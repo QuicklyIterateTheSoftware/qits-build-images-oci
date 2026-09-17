@@ -1,0 +1,87 @@
+# THE WHOLE RELEASE CYCLE OF THIS REPOSITORY, in one declaration and two slots.
+#
+# `ci-event-release-request.yml` and `ci-event-release.yml` used to spell it here: two triggers, two
+# checkouts that had to be kept matched by discipline alone, the CalVer dug out of
+# `$QITS_EVENT_PAYLOAD` with a `sed` because the bootstrap ci-base had no jq, and ~100 lines of
+# `sed`/`case`/`printf` hand-writing five CycloneDX documents out of five Dockerfiles' `FROM` lines,
+# ending in a `docker run … ci-base:$version` whose only purpose was to borrow a `curl` for the PUT.
+# All of that is platform process now: qits-ci compiles the wrapper's
+# `.config/qits/release-archetypes/oci.yml` into both pipelines at evaluation time, the composed
+# prelude fetches the tag and puts the `qits` CLI on PATH, `qits-publish sbom from-dockerfile` is
+# that generator with a real parser behind it, and the composed postlude submits one document per
+# declared artifact after the script and before the step's exit code — so the SBOM-before-green
+# ordering the deleted file argued at length holds by construction rather than by a PUT we wrote.
+#
+# FIVE IMAGES OUT OF ONE TREE, WHICH IS WHY BOTH SLOTS ARE THIS REPOSITORY'S. The `oci` archetype
+# builds and pushes exactly one image, and its extractor refuses a second docker entry outright.
+# This repository declares five and builds all five in one step, so it spells its own
+# `release-request:` and `release:`. A declared slot replaces the archetype's entirely — there is no
+# per-step merging — and the two must stay the same build, which is why the loops below differ only
+# in the tag and the pushes.
+#
+# AND IT CANNOT RIDE ANY ARCHETYPE'S STEP IMAGE ANYWAY. The images this repository builds ARE
+# `qits/build-images/*`: a recipe running on `ci-base:latest` would bootstrap itself, and a
+# `docker system prune` on 2026-08-20 already proved what that costs — the platform's entire CI
+# plane deleted with no run left anywhere able to rebuild it. So the steps run on UPSTREAM
+# `docker:28-dind` with `docker: true`, not on buildctl, deliberately, and this is the one
+# repository on the platform for which that is correct. That image has `/bin/sh` and busybox `wget`
+# but neither bash nor curl; the composed prelude picks `sh -eu` when bash is absent and `wget -O`
+# when curl is, so the scripts below stay POSIX and the CLI still arrives.
+#
+# `:latest` IS A SECOND TAG AND IT IS LOAD-BEARING. Every archetype has retired the alias, and here
+# it is the coordinate every other repository's steps name — `qits/build-images/<x>:latest`. It is
+# made by `docker tag` against the finished build rather than by a second `-t`, because BuildKit's
+# exporter does not reliably leave every alias of a multi-tag build in the local store, which is how
+# two siblings' pushes came to answer "tag does not exist". The QA half writes no `latest` and
+# pushes nothing at all: an unreviewed Dockerfile must never become the thing the whole platform
+# builds on, silently, from the moment it lands.
+#
+# `$QITS_REGISTRY`, NOT `$QITS_BUILD_REGISTRY`. This pipeline pushes through a docker daemon rather
+# than through the platform builder, so the registry name it needs is the host daemon's view of it.
+#
+# THE `sbom:` PATHS ARE WHERE THE STEP WRITES, NOT WHERE IT PUTS. One document per image, each at
+# the path its artifact entry declares, generated in the same single step the postlude appends to —
+# which is the only place those files exist, since steps share no working directory.
+archetype: oci
+artifacts:
+  - { type: docker, name: qits/build-images/ci-base, sbom: sbom-ci-base.json }
+  - { type: docker, name: qits/build-images/maven-base, sbom: sbom-maven-base.json }
+  - { type: docker, name: qits/build-images/userflows-base, sbom: sbom-userflows-base.json }
+  - { type: docker, name: qits/build-images/node-base, sbom: sbom-node-base.json }
+  - { type: docker, name: qits/build-images/node-docker-base, sbom: sbom-node-docker-base.json }
+
+release-request:
+  - image: docker:28-dind
+    docker: true
+    timeout-seconds: 3600
+    script: |
+      images='ci-base maven-base userflows-base node-base node-docker-base'
+      for image in $images; do
+        docker build \
+          -f "$image/Dockerfile" \
+          -t "qits-build-images-oci-push/$image:$QITS_CI_SHA" \
+          .
+      done
+
+release:
+  - image: docker:28-dind
+    docker: true
+    timeout-seconds: 3600
+    script: |
+      images='ci-base maven-base userflows-base node-base node-docker-base'
+      for image in $images; do
+        repository="$QITS_REGISTRY/$QITS_IMAGE_REPOSITORY/build-images/$image"
+        docker build -f "$image/Dockerfile" -t "$repository:$QITS_VERSION" .
+        docker tag "$repository:$QITS_VERSION" "$repository:latest"
+      done
+      for image in $images; do
+        repository="$QITS_REGISTRY/$QITS_IMAGE_REPOSITORY/build-images/$image"
+        docker push "$repository:$QITS_VERSION"
+        docker push "$repository:latest"
+      done
+      for image in $images; do
+        qits-publish sbom from-dockerfile \
+          --root-name "qits/build-images/$image" --root-version "$QITS_VERSION" \
+          --dockerfile "$image/Dockerfile" \
+          -o "sbom-$image.json"
+      done

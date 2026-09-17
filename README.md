@@ -19,7 +19,7 @@ layers are content-addressed, so unchanged content is shared even when a new tag
 
 The repository has no `pom.xml`, `package.json`, or version file. That is intentional. A qits
 release creates the version and annotated Git tag, then supplies the same version in the
-`SCMRelease` event that runs `.config/qits/ci-event-release.yml`.
+`SCMRelease` event that runs the `release:` slot of `.config/qits/release.yml`.
 
 ## Building locally
 
