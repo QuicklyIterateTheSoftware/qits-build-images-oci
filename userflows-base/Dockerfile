@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright/java:v1.61.0-noble
+FROM mcr.microsoft.com/playwright/java:v1.63.0-noble
 
 # `skopeo` is here for the `qits` (OCI) story category in qits-artifacts' userflows: those stories
 # drive a real `skopeo copy` push and pull against the registry process the suite launches. It is the
