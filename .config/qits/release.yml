@@ -12,9 +12,9 @@
 # declared artifact after the script and before the step's exit code — so the SBOM-before-green
 # ordering the deleted file argued at length holds by construction rather than by a PUT we wrote.
 #
-# FIVE IMAGES OUT OF ONE TREE, WHICH IS WHY BOTH SLOTS ARE THIS REPOSITORY'S. The `oci` archetype
+# SIX IMAGES OUT OF ONE TREE, WHICH IS WHY BOTH SLOTS ARE THIS REPOSITORY'S. The `oci` archetype
 # builds and pushes exactly one image, and its extractor refuses a second docker entry outright.
-# This repository declares five and builds all five in one step, so it spells its own
+# This repository declares six and builds all six in one step, so it spells its own
 # `release-request:` and `release:`. A declared slot replaces the archetype's entirely — there is no
 # per-step merging — and the two must stay the same build, which is why the loops below differ only
 # in the tag and the pushes.
@@ -49,13 +49,14 @@ artifacts:
   - { type: docker, name: qits/build-images/userflows-base, sbom: sbom-userflows-base.json }
   - { type: docker, name: qits/build-images/node-base, sbom: sbom-node-base.json }
   - { type: docker, name: qits/build-images/node-docker-base, sbom: sbom-node-docker-base.json }
+  - { type: docker, name: qits/build-images/node-browser-base, sbom: sbom-node-browser-base.json }
 
 release-request:
   - image: docker:28-dind
     docker: true
     timeout-seconds: 3600
     script: |
-      images='ci-base maven-base userflows-base node-base node-docker-base'
+      images='ci-base maven-base userflows-base node-base node-docker-base node-browser-base'
       for image in $images; do
         docker build \
           -f "$image/Dockerfile" \
@@ -68,7 +69,7 @@ release:
     docker: true
     timeout-seconds: 3600
     script: |
-      images='ci-base maven-base userflows-base node-base node-docker-base'
+      images='ci-base maven-base userflows-base node-base node-docker-base node-browser-base'
       for image in $images; do
         repository="$QITS_REGISTRY/$QITS_IMAGE_REPOSITORY/build-images/$image"
         docker build -f "$image/Dockerfile" -t "$repository:$QITS_VERSION" .

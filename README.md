@@ -12,6 +12,7 @@ because they are one platform surface and deliberately share one release version
 | `qits/build-images/userflows-base` | Maven plus the browser toolchain used by qits-userflows-javalib |
 | `qits/build-images/node-base` | Node and Corepack build/publish step |
 | `qits/build-images/node-docker-base` | Node build step that can also drive the host Docker daemon |
+| `qits/build-images/node-browser-base` | Node plus the pinned screenshot renderer (Playwright Chromium and fonts); the `app` QA step and the workspace image both build on it |
 
 Every release publishes every image with the release CalVer and with `latest`. The immutable
 CalVer is the release coordinate; `latest` is the channel consumed by CI configurations. Registry
@@ -70,7 +71,7 @@ POSIX, including the deliberate `sed`-instead-of-`jq` version parse in the relea
 To rebuild the whole set by hand — a cold machine with no registry and no CI:
 
 ```sh
-for i in ci-base maven-base userflows-base node-base node-docker-base; do
+for i in ci-base maven-base userflows-base node-base node-docker-base node-browser-base; do
   docker build -t "qits/build-images/$i:latest" -f "$i/Dockerfile" .
 done
 ```
