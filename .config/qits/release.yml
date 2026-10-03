@@ -36,8 +36,11 @@
 # pushes nothing at all: an unreviewed Dockerfile must never become the thing the whole platform
 # builds on, silently, from the moment it lands.
 #
-# `$QITS_REGISTRY`, NOT `$QITS_BUILD_REGISTRY`. This pipeline pushes through a docker daemon rather
-# than through the platform builder, so the registry name it needs is the host daemon's view of it.
+# THE REGISTRY IS CODE, under the platform's public domain (qits-731): `registry.qits.$QITS_DOMAIN`,
+# with `wohlben.eu` covering a qits-ci too old to inject `QITS_DOMAIN`. Every consumer dials the same
+# public name now, including this pipeline's docker daemon — hairpin resolves it from inside the
+# platform network like any other address — so there is no longer a push-path/build-path distinction
+# to spell here.
 #
 # THE `sbom:` PATHS ARE WHERE THE STEP WRITES, NOT WHERE IT PUTS. One document per image, each at
 # the path its artifact entry declares, generated in the same single step the postlude appends to —
@@ -69,14 +72,15 @@ release:
     docker: true
     timeout-seconds: 3600
     script: |
+      qits_domain=${QITS_DOMAIN:-wohlben.eu}
       images='ci-base maven-base userflows-base node-base node-docker-base node-browser-base'
       for image in $images; do
-        repository="$QITS_REGISTRY/$QITS_IMAGE_REPOSITORY/build-images/$image"
+        repository="registry.qits.$qits_domain/$QITS_IMAGE_REPOSITORY/build-images/$image"
         docker build -f "$image/Dockerfile" -t "$repository:$QITS_VERSION" .
         docker tag "$repository:$QITS_VERSION" "$repository:latest"
       done
       for image in $images; do
-        repository="$QITS_REGISTRY/$QITS_IMAGE_REPOSITORY/build-images/$image"
+        repository="registry.qits.$qits_domain/$QITS_IMAGE_REPOSITORY/build-images/$image"
         docker push "$repository:$QITS_VERSION"
         docker push "$repository:latest"
       done
