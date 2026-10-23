@@ -98,6 +98,15 @@ if ! [ -x /usr/local/bin/ci-slot-entrypoint ]; then
   status=1
 fi
 
+# The runner mounts fresh named volumes on these paths, and a new volume takes the ownership of the
+# image's directory: each must exist and be the build user's, or uid 1001 cannot write to it.
+for dir in /work /work/home /cache/git /caches/m2 /caches/pnpm; do
+  if ! [ -d "$dir" ] || ! [ -w "$dir" ]; then
+    echo "check-tools: $dir is missing or not writable by $(id -un)" >&2
+    status=1
+  fi
+done
+
 for forbidden in docker docker-buildx; do
   if command -v "$forbidden" >/dev/null 2>&1; then
     echo "check-tools: $forbidden is present at $(command -v "$forbidden"); ci-slot has no docker by design" >&2
