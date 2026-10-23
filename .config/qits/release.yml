@@ -12,35 +12,38 @@
 # declared artifact after the script and before the step's exit code — so the SBOM-before-green
 # ordering the deleted file argued at length holds by construction rather than by a PUT we wrote.
 #
-# SIX IMAGES OUT OF ONE TREE, WHICH IS WHY BOTH SLOTS ARE THIS REPOSITORY'S. The `oci` archetype
+# SEVEN IMAGES OUT OF ONE TREE, WHICH IS WHY BOTH SLOTS ARE THIS REPOSITORY'S. The `oci` archetype
 # builds and pushes exactly one image, and its extractor refuses a second docker entry outright.
-# This repository declares six and builds all six in one step, so it spells its own
+# This repository declares seven and builds all seven in one step, so it spells its own
 # `release-request:` and `release:`. A declared slot replaces the archetype's entirely — there is no
 # per-step merging — and the two must stay the same build, which is why the loops below differ only
-# in the tag and the pushes.
+# in the `--output`.
 #
-# AND IT CANNOT RIDE ANY ARCHETYPE'S STEP IMAGE ANYWAY. The images this repository builds ARE
-# `qits/build-images/*`: a recipe running on `ci-base:latest` would bootstrap itself, and a
-# `docker system prune` on 2026-08-20 already proved what that costs — the platform's entire CI
-# plane deleted with no run left anywhere able to rebuild it. So the steps run on UPSTREAM
-# `docker:28-dind` with `docker: true`, not on buildctl, deliberately, and this is the one
-# repository on the platform for which that is correct. That image has `/bin/sh` and busybox `wget`
-# but neither bash nor curl; the composed prelude picks `sh -eu` when bash is absent and `wget -O`
-# when curl is, so the scripts below stay POSIX and the CLI still arrives.
+# IT RUNS ON ci-base WITH `build: true` (qits-1540, epic qits-1481 "CI in a slot"). It used to run on
+# upstream `docker:28-dind` with `docker: true`, to keep the images this repository builds out of its
+# own pipeline after the 2026-08-20 `docker system prune` deleted them all. Once CI runs in a slot a
+# `docker: true` step is a CONFIG_ERROR, and the images live in the registry, not in a host's local
+# store a prune can empty — so the build moves to buildctl against the platform buildkitd like every
+# other image on the estate. The bootstrap from a cold machine is the README's loop, by hand.
 #
-# `:latest` IS A SECOND TAG AND IT IS LOAD-BEARING. Every archetype has retired the alias, and here
-# it is the coordinate every other repository's steps name — `qits/build-images/<x>:latest`. It is
-# made by `docker tag` against the finished build rather than by a second `-t`, because BuildKit's
-# exporter does not reliably leave every alias of a multi-tag build in the local store, which is how
-# two siblings' pushes came to answer "tag does not exist". The QA half writes no `latest` and
-# pushes nothing at all: an unreviewed Dockerfile must never become the thing the whole platform
-# builds on, silently, from the moment it lands.
+# `:latest` IS A SECOND NAME AND IT IS LOAD-BEARING. Every archetype has retired the alias, and here
+# it is the coordinate every other repository's steps name — `qits/build-images/<x>:latest`. Both
+# names go out of ONE buildctl build, one quoted `name=` holding both, so they cannot be two
+# different images. The QA half pushes nothing at all: an unreviewed Dockerfile must never become
+# the thing the whole platform builds on, silently, from the moment it lands.
+#
+# THE TOOL CHECK GATES THE PUSH. ci-slot's `check` target runs ci-slot/check-tools.sh on top of the
+# exact stage that is pushed, in both halves, and the release builds it before any `--output` — so a
+# ci-slot missing a tool a recipe calls fails the release and never reaches `:latest`.
+#
+# REGISTRY AUTH IS THE PLATFORM'S: a `build: true` step gets `$DOCKER_CONFIG` and the run's login in
+# `$QITS_CI_REGISTRY_AUTH_CONFIG`, which the bootstrap writes to `$DOCKER_CONFIG/config.json` — the
+# file buildctl reads for the push. Nothing here logs in.
 #
 # THE REGISTRY IS CODE, under the platform's public domain (qits-731): `registry.qits.$QITS_DOMAIN`,
 # with `wohlben.eu` covering a qits-ci too old to inject `QITS_DOMAIN`. Every consumer dials the same
-# public name now, including this pipeline's docker daemon — hairpin resolves it from inside the
-# platform network like any other address — so there is no longer a push-path/build-path distinction
-# to spell here.
+# public name now, including the platform builder — hairpin resolves it from inside the platform
+# network like any other address — so there is no push-path/build-path distinction to spell here.
 #
 # THE `sbom:` PATHS ARE WHERE THE STEP WRITES, NOT WHERE IT PUTS. One document per image, each at
 # the path its artifact entry declares, generated in the same single step the postlude appends to —
@@ -53,36 +56,50 @@ artifacts:
   - { type: docker, name: qits/build-images/node-base, sbom: sbom-node-base.json }
   - { type: docker, name: qits/build-images/node-docker-base, sbom: sbom-node-docker-base.json }
   - { type: docker, name: qits/build-images/node-browser-base, sbom: sbom-node-browser-base.json }
+  - { type: docker, name: qits/build-images/ci-slot, sbom: sbom-ci-slot.json }
 
 release-request:
-  - image: docker:28-dind
-    docker: true
+  - image: qits/build-images/ci-base:latest
+    build: true
     timeout-seconds: 3600
     script: |
-      images='ci-base maven-base userflows-base node-base node-docker-base node-browser-base'
+      : "${BUILDKIT_HOST:?the platform builder is off or not injected; this step builds only through it}"
+      # NOTHING IS PUBLISHED, SO THERE IS NO `--output`: buildctl solves each graph and exports
+      # nothing. ci-slot is built at its pushed target and then at `check`, which runs
+      # check-tools.sh on top of it.
+      images='ci-base maven-base userflows-base node-base node-docker-base node-browser-base ci-slot'
       for image in $images; do
-        docker build \
-          -f "$image/Dockerfile" \
-          -t "qits-build-images-oci-push/$image:$QITS_CI_SHA" \
-          .
+        target=''
+        if [ "$image" = ci-slot ]; then target='--opt target=ci-slot'; fi
+        # shellcheck disable=SC2086 # $target is zero or two words on purpose
+        buildctl build --frontend dockerfile.v0 \
+          --local context=. --local dockerfile="$image" $target
       done
+      buildctl build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile=ci-slot --opt target=check
 
 release:
-  - image: docker:28-dind
-    docker: true
+  - image: qits/build-images/ci-base:latest
+    build: true
     timeout-seconds: 3600
     script: |
-      qits_domain=${QITS_DOMAIN:-wohlben.eu}
-      images='ci-base maven-base userflows-base node-base node-docker-base node-browser-base'
+      : "${BUILDKIT_HOST:?the platform builder is off or not injected; this step builds only through it}"
+      qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
+      images='ci-base maven-base userflows-base node-base node-docker-base node-browser-base ci-slot'
+      # THE TOOL CHECK FIRST, before anything is pushed: a ci-slot missing a tool fails here.
+      buildctl build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile=ci-slot --opt target=check
+      # `push=true` IS THE PUBLISH: each image goes from the builder straight to the registry, under
+      # both names at once — the quoted `name=` is buildctl's CSV spelling of a multi-name output.
       for image in $images; do
         repository="registry.qits.$qits_domain/$QITS_IMAGE_REPOSITORY/build-images/$image"
-        docker build -f "$image/Dockerfile" -t "$repository:$QITS_VERSION" .
-        docker tag "$repository:$QITS_VERSION" "$repository:latest"
-      done
-      for image in $images; do
-        repository="registry.qits.$qits_domain/$QITS_IMAGE_REPOSITORY/build-images/$image"
-        docker push "$repository:$QITS_VERSION"
-        docker push "$repository:latest"
+        target=''
+        if [ "$image" = ci-slot ]; then target='--opt target=ci-slot'; fi
+        echo "releasing $repository:$QITS_VERSION and :latest"
+        # shellcheck disable=SC2086 # $target is zero or two words on purpose
+        buildctl build --frontend dockerfile.v0 \
+          --local context=. --local dockerfile="$image" $target \
+          --output "type=image,\"name=$repository:$QITS_VERSION,$repository:latest\",push=true"
       done
       for image in $images; do
         qits-publish sbom from-dockerfile \
