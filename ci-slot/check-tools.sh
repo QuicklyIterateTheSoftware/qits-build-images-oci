@@ -90,6 +90,14 @@ if ! [ -x "$(git --exec-path)/git-http-backend" ]; then
   status=1
 fi
 
+# The ENTRYPOINT (qits-1540): a lease container starts with no command override, so this is what
+# runs the bootstrap script qits-ci-service hands in QITS_CI_BOOTSTRAP. Not on PATH by name-lookup
+# convention; check the fixed path directly.
+if ! [ -x /usr/local/bin/ci-slot-entrypoint ]; then
+  echo "check-tools: /usr/local/bin/ci-slot-entrypoint is missing or not executable" >&2
+  status=1
+fi
+
 for forbidden in docker docker-buildx; do
   if command -v "$forbidden" >/dev/null 2>&1; then
     echo "check-tools: $forbidden is present at $(command -v "$forbidden"); ci-slot has no docker by design" >&2

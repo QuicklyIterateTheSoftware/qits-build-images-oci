@@ -13,7 +13,7 @@ because they are one platform surface and deliberately share one release version
 | `qits/build-images/node-base` | Node and Corepack build/publish step |
 | `qits/build-images/node-docker-base` | Node build step that can also drive the host Docker daemon |
 | `qits/build-images/node-browser-base` | Node plus the pinned screenshot renderer (Playwright Chromium and fonts); the `app` QA step and the workspace image both build on it |
-| `qits/build-images/ci-slot` | The one CI image: every step of a run executes in it (epic qits-1481). The union of the step images above, Debian bookworm, no docker; `ci-slot/check-tools.sh` lists the commands it must carry and the release fails without them |
+| `qits/build-images/ci-slot` | The one CI image: every step of a run executes in it (epic qits-1481). The union of the step images above, Debian bookworm, no docker; `ci-slot/check-tools.sh` lists the commands it must carry and the release fails without them. `ENTRYPOINT` runs `/usr/local/bin/ci-slot-entrypoint`, which execs the bootstrap script qits-ci-service hands the container in `QITS_CI_BOOTSTRAP` — the lease container starts with no command override, so this is the only thing that ever runs; it exits 64 if the variable is unset. No `CMD`. |
 
 Every release publishes every image with the release CalVer and with `latest`. The immutable
 CalVer is the release coordinate; `latest` is the channel consumed by CI configurations. Registry
@@ -31,8 +31,18 @@ Build one image from the repository root:
 docker build -f ci-base/Dockerfile -t qits/build-images/ci-base:local .
 ```
 
-Only ci-slot reads the build context (its `check` target copies `ci-slot/check-tools.sh`); `--target ci-slot` builds the image itself and `--target check` runs the tool check. Keeping the repository root as the
-context leaves room for shared scripts without changing the release pipeline.
+Only ci-slot reads the build context: the `ci-slot` stage copies in `ci-slot/ci-slot-entrypoint`
+(its `ENTRYPOINT`) and the `check` target on top of it copies `ci-slot/check-tools.sh`.
+`--target ci-slot` builds the image itself and `--target check` runs the tool check. Keeping the
+repository root as the context leaves room for shared scripts without changing the release
+pipeline.
+
+Running `qits/build-images/ci-slot` by hand needs `QITS_CI_BOOTSTRAP` set, since the image has no
+`CMD` and its `ENTRYPOINT` execs that variable's contents or refuses with exit 64:
+
+```sh
+docker run -e QITS_CI_BOOTSTRAP='echo hi' qits/build-images/ci-slot:local
+```
 
 ## How a recipe consumes these
 

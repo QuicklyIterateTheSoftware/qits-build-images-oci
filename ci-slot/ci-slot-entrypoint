@@ -1,0 +1,13 @@
+#!/bin/sh
+# ci-slot's ENTRYPOINT (qits-1540). The lease container that starts from this image has no command
+# override — the runner's lease spec carries no entrypoint field — and qits-ci-service hands the
+# container its bootstrap shell script through the QITS_CI_BOOTSTRAP environment variable rather
+# than as an image argument. This script is the whole contract: run that script.
+set -u
+
+if [ -z "${QITS_CI_BOOTSTRAP:-}" ]; then
+  echo "ci-slot: QITS_CI_BOOTSTRAP is not set" >&2
+  exit 64
+fi
+
+exec /bin/sh -c "$QITS_CI_BOOTSTRAP"

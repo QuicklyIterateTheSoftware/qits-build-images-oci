@@ -143,6 +143,13 @@ ENV HOME=/work/home
 USER build
 WORKDIR /work
 
+# THE ENTRYPOINT. The lease container starts this image with no command override — the runner's
+# lease spec carries no entrypoint field — and qits-ci-service hands it the bootstrap shell script
+# to run through QITS_CI_BOOTSTRAP rather than as an image argument. Exec form, no CMD: there is no
+# default to fall back to, and ci-slot-entrypoint refuses outright when the variable is unset.
+COPY --chmod=0755 ci-slot/ci-slot-entrypoint /usr/local/bin/ci-slot-entrypoint
+ENTRYPOINT ["/usr/local/bin/ci-slot-entrypoint"]
+
 # THE TOOL CHECK, a target of its own so the release can build it from the very stage it pushes.
 # `buildctl build --opt target=check` reuses every ci-slot layer from the cache and fails when
 # check-tools.sh does — before anything is pushed. Nothing exports this stage.
