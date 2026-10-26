@@ -38,18 +38,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 #   Debian, named anyway so nobody removes it by accident.
 # - skopeo: userflows-base's, for qits-artifacts' OCI userflow stories.
 # - gpg: NodeSource's setup script below needs it to add its key.
-# - unzip: ./mvnw's hidden dependency (qits-1540). `distributionType=only-script` wrapper scripts
-#   probe `command -v unzip`; absent, they switch to the `.tar.gz` distribution but still check it
-#   against the `.zip`'s `distributionSha256Sum`, so every `./mvnw` in the slot failed with "Failed
-#   to validate Maven distribution SHA-256". maven-base (Alpine) never needed this line because
-#   busybox's `unzip` applet answered `command -v` there; Debian carries no such built-in.
-# - procps: provides `kill`, `ps`, `pkill` and `pgrep`, which the old Alpine step images got from
-#   busybox's applets. Java tests and step scripts exec them directly: qits-projects-service's
-#   `HangupImmunityTest` runs `kill -HUP` on itself and failed with "Cannot run program \"kill\""
-#   (qits-projects-service-rr-367, run 69bc9eff). qits-1540.
-# - psmisc: killall, fuser and pstree, procps' companions — busybox applets on the old Alpine step
-#   images, a separate package on Debian. Nothing calls them yet; they are the one family of the
-#   step images' commands a test that signals or inspects processes reaches for (qits-1649).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \
@@ -58,10 +46,7 @@ RUN apt-get update \
         git \
         gpg \
         jq \
-        procps \
-        psmisc \
         skopeo \
-        unzip \
         util-linux \
     && rm -rf /var/lib/apt/lists/*
 
@@ -143,6 +128,33 @@ RUN dirs=$(cat /tmp/playwright-1.63-dirs) \
     && chmod 0644 /etc/qits-renderer-provenance \
     && rm /tmp/playwright-1.63-dirs \
     && cat /etc/qits-renderer-provenance
+
+# THE SMALL TOOLS, LAST (qits-1650). Every layer after a changed one is rebuilt and re-pulled by
+# every target; the layers above this one are gigabytes (Node, the JDK, fonts, two Chromiums) and
+# each target pulls them over one shared ~1.4 MB/s line, so a package added to the first apt layer
+# cost every target the whole image again (qits-1650, the procps release on 2026-10-26 stopped CI
+# for 30+ minutes). A small package a step needs goes HERE, at the end of this list, never into the
+# first layer or another heavy one; then a release re-sends only this layer and the few tiny ones
+# after it.
+#
+# - unzip: ./mvnw's hidden dependency (qits-1540). `distributionType=only-script` wrapper scripts
+#   probe `command -v unzip`; absent, they switch to the `.tar.gz` distribution but still check it
+#   against the `.zip`'s `distributionSha256Sum`, so every `./mvnw` in the slot failed with "Failed
+#   to validate Maven distribution SHA-256". maven-base (Alpine) never needed this line because
+#   busybox's `unzip` applet answered `command -v` there; Debian carries no such built-in.
+# - procps: provides `kill`, `ps`, `pkill` and `pgrep`, which the old Alpine step images got from
+#   busybox's applets. Java tests and step scripts exec them directly: qits-projects-service's
+#   `HangupImmunityTest` runs `kill -HUP` on itself and failed with "Cannot run program \"kill\""
+#   (qits-projects-service-rr-367, run 69bc9eff). qits-1540.
+# - psmisc: killall, fuser and pstree, procps' companions — busybox applets on the old Alpine step
+#   images, a separate package on Debian. Nothing calls them yet; they are the one family of the
+#   step images' commands a test that signals or inspects processes reaches for (qits-1649).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        procps \
+        psmisc \
+        unzip \
+    && rm -rf /var/lib/apt/lists/*
 
 # The build user, uid 1001 — the lease's `spec.user`. Passwd-backed because zonky's embedded
 # postgres calls getpwuid and initdb refuses uid 0 (maven-base). HOME is under /work so it is the
