@@ -24,6 +24,18 @@
 #
 # Re-derive when a recipe or a release.yml starts calling something new; a step that needs a tool
 # this list does not name is a step that will fail in the slot.
+#
+# RE-CHECKED on 2026-10-26 (qits-1649) against two sources the first derivation missed, because the
+# step scripts are not the only callers: test suites and build tools exec commands themselves
+# (`ProcessBuilder`, `child_process`), and the Alpine step images answered those through busybox
+# without anybody naming them — `unzip` (qits-1540) and `kill` (qits-1649) were both that. (a) The
+# union of every command on PATH in the replaced step images (maven-base, node-base,
+# node-browser-base, userflows-base): 289 of them were absent from ci-slot. (b) What test code
+# execs, across every submodule: `ProcessBuilder`/`child_process` literals and the
+# `onPath`/`available`/`command -v` skip-guards. Only psmisc's process tools were added; the rest
+# of the union is left out on purpose because nothing calls it — kernel, boot, systemd, dbus, apk,
+# network-admin and console applets, and the Alpine maven image's binutils. Re-derive from BOTH
+# sources when a step, a test or a build tool starts calling something new.
 set -u
 
 # Called by the step scripts.
@@ -64,18 +76,22 @@ wc
 # then still validates it against the `.zip`'s distributionSha256Sum, so a slot without `unzip`
 # fails every `./mvnw` with "Failed to validate Maven distribution SHA-256" (qits-1540). kill,
 # pgrep, pkill and ps come from procps, which Java tests and step scripts exec directly — e.g.
-# qits-projects-service's `HangupImmunityTest` sends itself `kill -HUP` (qits-1540).
+# qits-projects-service's `HangupImmunityTest` sends itself `kill -HUP` (qits-1540). fuser, killall
+# and pstree come from psmisc, the rest of busybox's process applets (qits-1649).
 contract_commands='
 bash
 corepack
 flock
+fuser
 java
 jq
 kill
+killall
 npx
 pgrep
 pkill
 ps
+pstree
 setsid
 skopeo
 unzip

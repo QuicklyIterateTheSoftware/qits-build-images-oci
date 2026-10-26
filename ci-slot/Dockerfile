@@ -47,6 +47,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 #   busybox's applets. Java tests and step scripts exec them directly: qits-projects-service's
 #   `HangupImmunityTest` runs `kill -HUP` on itself and failed with "Cannot run program \"kill\""
 #   (qits-projects-service-rr-367, run 69bc9eff). qits-1540.
+# - psmisc: killall, fuser and pstree, procps' companions — busybox applets on the old Alpine step
+#   images, a separate package on Debian. Nothing calls them yet; they are the one family of the
+#   step images' commands a test that signals or inspects processes reaches for (qits-1649).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \
@@ -56,6 +59,7 @@ RUN apt-get update \
         gpg \
         jq \
         procps \
+        psmisc \
         skopeo \
         unzip \
         util-linux \
