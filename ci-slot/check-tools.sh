@@ -59,7 +59,10 @@ wc
 # Not called by name in a step script, but part of the image contract the dossier lists, and what
 # the named commands need underneath: java for ./mvnw, npx for Playwright, corepack behind pnpm,
 # bash for the daemon's shell probe, jq and setsid (util-linux) for test suites, skopeo for the OCI
-# userflow stories, flock for the daemon's warm-base mirror lock.
+# userflow stories, flock for the daemon's warm-base mirror lock, unzip for ./mvnw's own hidden
+# dependency — the wrapper script only falls back to `.tar.gz` when `command -v unzip` fails, and
+# then still validates it against the `.zip`'s distributionSha256Sum, so a slot without `unzip`
+# fails every `./mvnw` with "Failed to validate Maven distribution SHA-256" (qits-1540).
 contract_commands='
 bash
 corepack
@@ -69,6 +72,7 @@ jq
 npx
 setsid
 skopeo
+unzip
 '
 
 missing=''

@@ -38,6 +38,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 #   Debian, named anyway so nobody removes it by accident.
 # - skopeo: userflows-base's, for qits-artifacts' OCI userflow stories.
 # - gpg: NodeSource's setup script below needs it to add its key.
+# - unzip: ./mvnw's hidden dependency (qits-1540). `distributionType=only-script` wrapper scripts
+#   probe `command -v unzip`; absent, they switch to the `.tar.gz` distribution but still check it
+#   against the `.zip`'s `distributionSha256Sum`, so every `./mvnw` in the slot failed with "Failed
+#   to validate Maven distribution SHA-256". maven-base (Alpine) never needed this line because
+#   busybox's `unzip` applet answered `command -v` there; Debian carries no such built-in.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \
@@ -47,6 +52,7 @@ RUN apt-get update \
         gpg \
         jq \
         skopeo \
+        unzip \
         util-linux \
     && rm -rf /var/lib/apt/lists/*
 
