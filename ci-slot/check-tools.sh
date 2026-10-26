@@ -62,14 +62,20 @@ wc
 # userflow stories, flock for the daemon's warm-base mirror lock, unzip for ./mvnw's own hidden
 # dependency — the wrapper script only falls back to `.tar.gz` when `command -v unzip` fails, and
 # then still validates it against the `.zip`'s distributionSha256Sum, so a slot without `unzip`
-# fails every `./mvnw` with "Failed to validate Maven distribution SHA-256" (qits-1540).
+# fails every `./mvnw` with "Failed to validate Maven distribution SHA-256" (qits-1540). kill,
+# pgrep, pkill and ps come from procps, which Java tests and step scripts exec directly — e.g.
+# qits-projects-service's `HangupImmunityTest` sends itself `kill -HUP` (qits-1540).
 contract_commands='
 bash
 corepack
 flock
 java
 jq
+kill
 npx
+pgrep
+pkill
+ps
 setsid
 skopeo
 unzip

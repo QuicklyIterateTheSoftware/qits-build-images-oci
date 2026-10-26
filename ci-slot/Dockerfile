@@ -43,6 +43,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 #   against the `.zip`'s `distributionSha256Sum`, so every `./mvnw` in the slot failed with "Failed
 #   to validate Maven distribution SHA-256". maven-base (Alpine) never needed this line because
 #   busybox's `unzip` applet answered `command -v` there; Debian carries no such built-in.
+# - procps: provides `kill`, `ps`, `pkill` and `pgrep`, which the old Alpine step images got from
+#   busybox's applets. Java tests and step scripts exec them directly: qits-projects-service's
+#   `HangupImmunityTest` runs `kill -HUP` on itself and failed with "Cannot run program \"kill\""
+#   (qits-projects-service-rr-367, run 69bc9eff). qits-1540.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \
@@ -51,6 +55,7 @@ RUN apt-get update \
         git \
         gpg \
         jq \
+        procps \
         skopeo \
         unzip \
         util-linux \
