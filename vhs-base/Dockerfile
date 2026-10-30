@@ -91,7 +91,7 @@ ENV VHS_NO_SANDBOX=true
 
 # vhs, from its GitHub release's linux .deb. Its goreleaser-built .deb names use the same amd64/
 # arm64 spelling as TARGETARCH, so no translation table is needed here, unlike ttyd below.
-ARG VHS_VERSION=0.10.0
+ARG VHS_VERSION=0.12.1
 ARG TARGETARCH
 RUN set -eu; \
     case "${TARGETARCH}" in \
@@ -99,7 +99,7 @@ RUN set -eu; \
         *) echo "vhs-base: no known vhs release asset for TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     curl -fsSL -o /tmp/vhs.deb \
-        "https://github.com/charmbracelet/vhs/releases/download/v${VHS_VERSION}/vhs_${VHS_VERSION}_linux_${TARGETARCH}.deb" \
+        "https://github.com/charmbracelet/vhs/releases/download/v${VHS_VERSION}/vhs_${VHS_VERSION}_${TARGETARCH}.deb" \
     && apt-get update \
     && apt-get install -y --no-install-recommends /tmp/vhs.deb \
     && rm -f /tmp/vhs.deb \
