@@ -12,9 +12,9 @@
 # declared artifact after the script and before the step's exit code — so the SBOM-before-green
 # ordering the deleted file argued at length holds by construction rather than by a PUT we wrote.
 #
-# SEVEN IMAGES OUT OF ONE TREE, WHICH IS WHY BOTH SLOTS ARE THIS REPOSITORY'S. The `oci` archetype
+# EIGHT IMAGES OUT OF ONE TREE, WHICH IS WHY BOTH SLOTS ARE THIS REPOSITORY'S. The `oci` archetype
 # builds and pushes exactly one image, and its extractor refuses a second docker entry outright.
-# This repository declares seven and builds all seven in one step, so it spells its own
+# This repository declares eight and builds all eight in one step, so it spells its own
 # `release-request:` and `release:`. A declared slot replaces the archetype's entirely — there is no
 # per-step merging — and the two must stay the same build, which is why the loops below differ only
 # in the `--output`.
@@ -56,6 +56,7 @@ artifacts:
   - { type: docker, name: qits/build-images/node-base, sbom: sbom-node-base.json }
   - { type: docker, name: qits/build-images/node-docker-base, sbom: sbom-node-docker-base.json }
   - { type: docker, name: qits/build-images/node-browser-base, sbom: sbom-node-browser-base.json }
+  - { type: docker, name: qits/build-images/vhs-base, sbom: sbom-vhs-base.json }
   - { type: docker, name: qits/build-images/ci-slot, sbom: sbom-ci-slot.json }
 
 release-request:
@@ -67,7 +68,7 @@ release-request:
       # NOTHING IS PUBLISHED, SO THERE IS NO `--output`: buildctl solves each graph and exports
       # nothing. ci-slot is built at its pushed target and then at `check`, which runs
       # check-tools.sh on top of it.
-      images='ci-base maven-base userflows-base node-base node-docker-base node-browser-base ci-slot'
+      images='ci-base maven-base userflows-base node-base node-docker-base node-browser-base vhs-base ci-slot'
       for image in $images; do
         target=''
         if [ "$image" = ci-slot ]; then target='--opt target=ci-slot'; fi
@@ -85,7 +86,7 @@ release:
     script: |
       : "${BUILDKIT_HOST:?the platform builder is off or not injected; this step builds only through it}"
       qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
-      images='ci-base maven-base userflows-base node-base node-docker-base node-browser-base ci-slot'
+      images='ci-base maven-base userflows-base node-base node-docker-base node-browser-base vhs-base ci-slot'
       # THE TOOL CHECK FIRST, before anything is pushed: a ci-slot missing a tool fails here.
       buildctl build --frontend dockerfile.v0 \
         --local context=. --local dockerfile=ci-slot --opt target=check

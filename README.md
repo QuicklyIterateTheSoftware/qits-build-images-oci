@@ -13,6 +13,7 @@ because they are one platform surface and deliberately share one release version
 | `qits/build-images/node-base` | Node and Corepack build/publish step |
 | `qits/build-images/node-docker-base` | Node build step that can also drive the host Docker daemon |
 | `qits/build-images/node-browser-base` | Node plus the pinned screenshot renderer (Playwright Chromium and fonts); the `app` QA step and the workspace image both build on it |
+| `qits/build-images/vhs-base` | Pinned vhs/ttyd/Chromium/font stack that plays `tapes/*.tape`; the `cli-tapes` QA step and qits-maintenance's `cli-tapes` automation both build on it |
 | `qits/build-images/ci-slot` | The one CI image: every step of a run executes in it (epic qits-1481). The union of the step images above, Debian bookworm, no docker; `ci-slot/check-tools.sh` lists the commands it must carry and the release fails without them. `ENTRYPOINT` runs `/usr/local/bin/ci-slot-entrypoint`, which execs the bootstrap script qits-ci-service hands the container in `QITS_CI_BOOTSTRAP` — the lease container starts with no command override, so this is the only thing that ever runs; it exits 64 if the variable is unset. No `CMD`. |
 
 Every release publishes every image with the release CalVer and with `latest`. The immutable
@@ -74,7 +75,7 @@ cold-machine recovery is the loop below, by hand.
 To rebuild the whole set by hand — a cold machine with no registry and no CI:
 
 ```sh
-for i in ci-base maven-base userflows-base node-base node-docker-base node-browser-base ci-slot; do
+for i in ci-base maven-base userflows-base node-base node-docker-base node-browser-base vhs-base ci-slot; do
   target=; [ "$i" = ci-slot ] && target='--target ci-slot'
   docker build $target -t "qits/build-images/$i:latest" -f "$i/Dockerfile" .
 done
