@@ -6,6 +6,10 @@
 # stack, exactly as node-browser-base is the one renderer behind both the `app` QA step and the
 # workspace image.
 #
+# CI steps actually run in ci-slot, which carries the same vhs/ttyd pins (epic qits-1481, "CI in a
+# slot" — a step's `image:` is ignored there); vhs-base is the image for playing a tape locally
+# (`docker run`) without pulling the whole ci-slot.
+#
 # WHAT EACH TOOL IS FOR:
 #
 # - vhs (charmbracelet/vhs): reads a `.tape` script and drives a terminal session, emitting the

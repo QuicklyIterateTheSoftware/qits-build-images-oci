@@ -1,17 +1,22 @@
 # THE ONE CI IMAGE (epic qits-1481, "CI in a slot"). A CI run is one lease and one container, and
 # this is that container: qits-ci-daemon is its entrypoint (fetched at lease start, not baked in) and
 # every step of the run executes here, one after another, in a worktree under /work. So this image
-# is the UNION of the step images it replaces — maven-base, node-base, node-browser-base and
-# userflows-base — and every tool a recipe or a `release.yml` step calls must be in it.
-# `check-tools.sh` beside this file is that list, and the `check` stage at the bottom runs it in the
-# release, so a missing tool fails the release rather than somebody's build a day later.
+# is the UNION of the step images it replaces — maven-base, node-base, node-browser-base,
+# userflows-base and vhs-base — and every tool a recipe or a `release.yml` step calls must be in it.
+# A step's `image:` is ignored once CI runs in a slot, so vhs-base's vhs/ttyd/ffmpeg stack (epic
+# qits-881) has to live here too, not only in vhs-base, for the `cli-tapes` QA step to have anything
+# to run against. `check-tools.sh` beside this file is that list, and the `check` stage at the
+# bottom runs it in the release, so a missing tool fails the release rather than somebody's build a
+# day later.
 #
 # NO DOCKER CLI AND NO BUILDX, by design: steps build images through the platform buildkitd with
 # `buildctl` and `$BUILDKIT_HOST`, and `docker: true` is a CONFIG_ERROR once CI runs in a slot.
 # check-tools.sh asserts the absence too.
 #
 # Debian bookworm-slim, not Alpine: Playwright's Chromium needs glibc, and bookworm is what
-# node-browser-base (the screenshot renderer) is built on.
+# node-browser-base (the screenshot renderer) is built on. It is also what lets vhs (qits-881) reuse
+# that same Chromium through a PATH symlink — see below — rather than installing or downloading a
+# second one.
 #
 # The FROM tags are LITERALS, for ci-base's reason: the SBOM generator refuses an ARG in a FROM.
 # Upstream images come in as pulls, which ride the platform's registry mirror like every other
@@ -101,11 +106,21 @@ RUN apt-get update \
 # chromium_headless_shell-<rev>). `--with-deps` installs Chromium's OS libraries.
 #
 # The 1.63 install's directories are noted before the 1.61 one runs, so the provenance file below
-# describes the screenshot renderer and not the userflows' Chromium.
+# describes the screenshot renderer and not the userflows' Chromium. The same moment is also the
+# only one where that glob is unambiguous — only the 1.63 Chromium exists on disk yet, not the 1.61
+# one too — which is why `/usr/local/bin/chromium` is symlinked here rather than after both installs
+# or by re-deriving the path from the (by-then-deleted) dirs file below. vhs/go-rod's
+# `launcher.LookPath()` (qits-881) searches PATH for a `chromium` binary before it downloads one of
+# its own, so this symlink is what makes vhs render with the SAME Chromium the screenshot renderer
+# uses, never a second, separately-fetched one. `ls` (not a bare glob) fails the build outright if
+# the chrome-linux layout ever changes shape instead of silently symlinking nothing.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN apt-get update \
     && npx -y playwright@1.63.0 install --with-deps chromium \
     && ls -d ${PLAYWRIGHT_BROWSERS_PATH}/chromium* > /tmp/playwright-1.63-dirs \
+    && chrome_bin="$(ls ${PLAYWRIGHT_BROWSERS_PATH}/chromium-*/chrome-linux*/chrome)" \
+    && test -x "$chrome_bin" \
+    && ln -s "$chrome_bin" /usr/local/bin/chromium \
     && npx -y playwright@1.61.0 install --with-deps chromium \
     && chmod -R a+rX ${PLAYWRIGHT_BROWSERS_PATH} \
     && rm -rf /root/.npm /root/.cache /var/lib/apt/lists/*
@@ -128,6 +143,57 @@ RUN dirs=$(cat /tmp/playwright-1.63-dirs) \
     && chmod 0644 /etc/qits-renderer-provenance \
     && rm /tmp/playwright-1.63-dirs \
     && cat /etc/qits-renderer-provenance
+
+# THE cli-tapes QA STEP'S TOOLS (epic qits-881): vhs plays `tapes/*.tape`, shelling out to ttyd for
+# the pty-over-websocket bridge it drives a browser against and to ffmpeg to encode the captured
+# frames into a GIF. A step's `image:` is ignored once CI runs in a slot (qits-1481), so these have
+# to live here, not only in vhs-base — see vhs-base/Dockerfile's header for what each one is for and
+# why bumping any of them is a re-record event. No `chromium` apt package: the symlink made above,
+# while installing Playwright's own Chromium, already puts one on PATH for vhs/go-rod to find.
+#
+# KEEP THESE PINS IN LOCKSTEP WITH vhs-base/Dockerfile: VHS_VERSION, TTYD_VERSION and the release
+# URLs below must be the SAME values and the SAME URLs as there, or the two images render a tape
+# differently and only one of them is what a golden was recorded against. Bumping either is a
+# re-record event for every repository's cli-tapes goldens, exactly as node-browser-base's fonts
+# and Chromium are (vhs-base's header comment) — update both Dockerfiles in the same change.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# vhs/go-rod's Chromium needs `--no-sandbox`: the step user here is uid 1001, not root, but the
+# slot gives it no Chromium sandbox either (no CAP_SYS_ADMIN, no user namespace), so sandbox init
+# fails the same way. This is the variable vhs reads to add `--no-sandbox` itself instead of
+# failing (vhs-base's identical comment, same reasoning).
+ENV VHS_NO_SANDBOX=true
+
+# vhs, from its GitHub release's linux .deb — same ARGs, same URL as vhs-base/Dockerfile.
+ARG VHS_VERSION=0.12.1
+ARG TARGETARCH
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+        amd64|arm64) ;; \
+        *) echo "ci-slot: no known vhs release asset for TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/vhs.deb \
+        "https://github.com/charmbracelet/vhs/releases/download/v${VHS_VERSION}/vhs_${VHS_VERSION}_${TARGETARCH}.deb" \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends /tmp/vhs.deb \
+    && rm -f /tmp/vhs.deb \
+    && rm -rf /var/lib/apt/lists/*
+
+# ttyd, the static binary from its GitHub release — same ARG and the same `uname -m` translation as
+# vhs-base/Dockerfile (tsl0922/ttyd names its assets that way, not TARGETARCH's).
+ARG TTYD_VERSION=1.7.7
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+        amd64) ttyd_arch=x86_64 ;; \
+        arm64) ttyd_arch=aarch64 ;; \
+        *) echo "ci-slot: no known ttyd release asset for TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /usr/local/bin/ttyd \
+        "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.${ttyd_arch}" \
+    && chmod 0755 /usr/local/bin/ttyd
 
 # THE SMALL TOOLS, LAST (qits-1650). Every layer after a changed one is rebuilt and re-pulled by
 # every target; the layers above this one are gigabytes (Node, the JDK, fonts, two Chromiums) and

@@ -65,6 +65,7 @@ sha256sum
 sleep
 tar
 tr
+vhs
 wc
 '
 
@@ -77,10 +78,15 @@ wc
 # fails every `./mvnw` with "Failed to validate Maven distribution SHA-256" (qits-1540). kill,
 # pgrep, pkill and ps come from procps, which Java tests and step scripts exec directly — e.g.
 # qits-projects-service's `HangupImmunityTest` sends itself `kill -HUP` (qits-1540). fuser, killall
-# and pstree come from psmisc, the rest of busybox's process applets (qits-1649).
+# and pstree come from psmisc, the rest of busybox's process applets (qits-1649). ttyd and ffmpeg
+# are vhs's own underneath (epic qits-881): vhs shells out to ttyd for the pty-over-websocket bridge
+# it drives a browser against and to ffmpeg to encode the captured frames into a GIF; the cli-tapes
+# recipe never names either. chromium is checked separately below, since a dangling symlink would
+# still pass a bare `command -v`.
 contract_commands='
 bash
 corepack
+ffmpeg
 flock
 fuser
 java
@@ -94,6 +100,7 @@ ps
 pstree
 setsid
 skopeo
+ttyd
 unzip
 '
 
@@ -113,6 +120,18 @@ fi
 # git http-backend is a git subcommand, not a PATH entry (maven-base's git-daemon comment).
 if ! [ -x "$(git --exec-path)/git-http-backend" ]; then
   echo "check-tools: git http-backend is missing from this image" >&2
+  status=1
+fi
+
+# chromium (epic qits-881): vhs/go-rod's launcher.LookPath() finds its browser by this name on
+# PATH — the Dockerfile symlinks it to Playwright's own Chromium rather than installing or
+# downloading a second one. A bare `command -v` (what the loop above runs for every other command)
+# would still pass with a dangling symlink, so resolve it and actually run it.
+if ! chromium_path="$(command -v chromium)"; then
+  echo "check-tools: chromium is missing from this image" >&2
+  status=1
+elif ! "$chromium_path" --version >/dev/null 2>&1; then
+  echo "check-tools: chromium at $chromium_path does not run --version" >&2
   status=1
 fi
 
