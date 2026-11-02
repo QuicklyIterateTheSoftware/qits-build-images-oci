@@ -145,7 +145,7 @@ fi
 
 # The runner mounts fresh named volumes on these paths, and a new volume takes the ownership of the
 # image's directory: each must exist and be the build user's, or uid 1001 cannot write to it.
-for dir in /work /work/home /cache/git /caches/m2 /caches/pnpm; do
+for dir in /work /work/home /cache/git /caches/m2 /caches/pnpm /caches/ci-daemon; do
   if ! [ -d "$dir" ] || ! [ -w "$dir" ]; then
     echo "check-tools: $dir is missing or not writable by $(id -un)" >&2
     status=1

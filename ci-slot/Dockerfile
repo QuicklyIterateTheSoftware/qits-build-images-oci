@@ -225,14 +225,15 @@ RUN apt-get update \
 # The build user, uid 1001 — the lease's `spec.user`. Passwd-backed because zonky's embedded
 # postgres calls getpwuid and initdb refuses uid 0 (maven-base). HOME is under /work so it is the
 # user's own; /work holds the run worktrees and /cache the warm git mirrors and package caches the
-# daemon and the runner mount there. /cache/git, /caches/m2 and /caches/pnpm exist here, owned by
+# daemon and the runner mount there. /cache/git, /caches/m2, /caches/pnpm and /caches/ci-daemon (the
+# per-version qits-ci-daemon binary, qits-1809) exist here, owned by
 # build, because the runner mounts fresh named volumes on exactly those paths and docker gives a new
 # volume the ownership of the image's directory: without them the volumes are root's and uid 1001
 # cannot write its mirrors or caches. The safe.directory exemption is node-browser-base's, for a
 # mirror or worktree whose owner is not the user running git.
 RUN useradd --uid 1001 --user-group --home-dir /work/home --no-create-home --shell /bin/bash build \
-    && mkdir -p /work/home /cache/git /caches/m2 /caches/pnpm \
-    && chown build:build /work /work/home /cache /cache/git /caches /caches/m2 /caches/pnpm \
+    && mkdir -p /work/home /cache/git /caches/m2 /caches/pnpm /caches/ci-daemon \
+    && chown build:build /work /work/home /cache /cache/git /caches /caches/m2 /caches/pnpm /caches/ci-daemon \
     && git config --system --add safe.directory '*'
 
 ENV HOME=/work/home
