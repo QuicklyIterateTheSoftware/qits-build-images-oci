@@ -18,6 +18,21 @@
 #
 # QITS_TRUST_DIR overrides /etc/ssl/qits, for trust/test-trust.sh only. The source of truth is
 # trust/ in qits-build-images-oci.
+#
+# THE INIT HOOK DIRECTORY (epic qits-2525, qits-2656, dossier "Reaching the proxy" / "The init
+# hook"): just before the exec below, every /etc/qits/init.d/*.sh is sourced, in name order, in THIS
+# shell — sourced, not run, so a hook's `export`s reach the command about to be exec'd. Each hook
+# runs inside a guard built from a subshell of its own: that is what keeps a hook from ending
+# qits-trust-init, because a hook that turns on `set -e` and then fails, or that calls `exit`
+# explicitly (a bug in the hook — it only cuts that one hook short, losing any export still to come,
+# rather than doing what its author probably intended), ends only that subshell, never this process.
+# For the hook's exports to still reach this shell, the subshell dumps `export -p` to a temp file
+# just before it exits, and this shell sources that dump — plain export statements, nothing that can
+# fail — in the hook's place. A hook whose last command fails, directly or through its own `set -e`,
+# is reported and every export it made in that run is discarded; qits-trust-init logs one line,
+# `qits-trust-init: hook <file> failed`, to stderr and moves on to the next hook. No
+# /etc/qits/init.d (or no match for QITS_INIT_HOOK_DIR) is unchanged behaviour: this file still just
+# execs the command. QITS_INIT_HOOK_DIR overrides /etc/qits/init.d, for trust/test-trust.sh only.
 
 dir=${QITS_TRUST_DIR:-/etc/ssl/qits}
 work=''
@@ -152,4 +167,29 @@ apply() {
 )
 
 if [ "$#" -eq 0 ]; then exit 0; fi
+
+hookdir=${QITS_INIT_HOOK_DIR:-/etc/qits/init.d}
+if [ -d "$hookdir" ]; then
+  for hook in "$hookdir"/*.sh; do
+    [ -e "$hook" ] || continue  # the glob matched nothing: no *.sh in the directory
+    hookenv=$(mktemp "${TMPDIR:-/tmp}/qits-trust-init.hook.XXXXXX" 2>/dev/null) || hookenv=''
+    if [ -z "$hookenv" ]; then
+      echo "qits-trust-init: hook $hook failed" >&2
+      continue
+    fi
+    (
+      . "$hook"
+      hookstatus=$?
+      export -p >&3
+      exit "$hookstatus"
+    ) 3>"$hookenv"
+    if [ $? -eq 0 ]; then
+      . "$hookenv"
+    else
+      echo "qits-trust-init: hook $hook failed" >&2
+    fi
+    rm -f "$hookenv"
+  done
+fi
+
 exec "$@"

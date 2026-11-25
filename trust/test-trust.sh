@@ -1,6 +1,10 @@
 #!/bin/sh
 # THE IMAGE TRUST TEST (epic qits-2524): proves qits-trust-layout and qits-trust-init end to end, as
-# a non-root uid, against a throwaway CA served by `openssl s_server`.
+# a non-root uid, against a throwaway CA served by `openssl s_server`. It also proves qits-trust-
+# init's /etc/qits/init.d hook mechanism (epic qits-2525, qits-2656): a hook's export reaching the
+# exec'd command, a failing hook not stopping the exec, name order, and no hook directory changing
+# nothing — all through the QITS_INIT_HOOK_DIR override, so this needs no root and no real
+# /etc/qits/init.d either.
 #
 #   sh trust/test-trust.sh               simulate: lay out a temp copy of this machine's system bundle
 #                                        and JDK cacerts (QITS_TRUST_DIR, QITS_TRUST_SYSTEM_BUNDLE, a
@@ -333,6 +337,91 @@ done
 QITS_TRUST_ANCHORS='garbage' sh "$init" sh -c 'exit 7' 2>/dev/null
 status=$?
 if [ "$status" = 7 ]; then pass "the command's exit status passes through"; else fail "exit status $status, expected 7"; fi
+
+# 6. The init hook directory (qits-2656): /etc/qits/init.d/*.sh, sourced in name order, each inside a
+# guard, just before the exec. QITS_INIT_HOOK_DIR overrides the directory for all of this, the way
+# QITS_TRUST_DIR overrides the trust store, so none of it needs root or a real /etc/qits/init.d.
+hookdir="$tmp/init.d"
+mkdir -p "$hookdir"
+
+# No hook directory at all, two ways: the real default path (absent on this machine and on both
+# images this test runs in, since only qits-workspace-oci ever populates it) and an explicit
+# override at a path that does not exist. Either way, behaviour is exactly the exit-status-passthrough
+# case above with no hook-related stderr.
+if [ -d /etc/qits/init.d ]; then
+  skip "a real /etc/qits/init.d exists on this machine; the override-to-a-missing-path case still runs"
+else
+  env -u QITS_TRUST_ANCHORS -u QITS_INIT_HOOK_DIR sh "$init" sh -c 'exit 7' 2>"$tmp/hook.err"
+  status=$?
+  if [ "$status" = 7 ] && ! [ -s "$tmp/hook.err" ]; then
+    pass "no /etc/qits/init.d: unchanged behaviour (quiet, exit status passes through)"
+  else
+    fail "no /etc/qits/init.d changed behaviour: exit $status, stderr '$(cat "$tmp/hook.err")'"
+  fi
+fi
+QITS_INIT_HOOK_DIR="$tmp/no-such-init-d" env -u QITS_TRUST_ANCHORS sh "$init" sh -c 'exit 7' 2>"$tmp/hook.err"
+status=$?
+if [ "$status" = 7 ] && ! [ -s "$tmp/hook.err" ]; then
+  pass "QITS_INIT_HOOK_DIR at a missing path: unchanged behaviour"
+else
+  fail "a missing QITS_INIT_HOOK_DIR changed behaviour: exit $status, stderr '$(cat "$tmp/hook.err")'"
+fi
+
+# A hook's export, visible to `qits-trust-init env` (the exec'd command) because the hook is sourced,
+# not run.
+cat >"$hookdir/10-export.sh" <<'HOOK'
+export HOOK_TEST_EXPORT=visible
+HOOK
+hook_env=$(QITS_INIT_HOOK_DIR="$hookdir" env -u QITS_TRUST_ANCHORS sh "$init" env 2>"$tmp/hook.err")
+if printf '%s\n' "$hook_env" | grep -qx 'HOOK_TEST_EXPORT=visible' && ! [ -s "$tmp/hook.err" ]; then
+  pass "a hook's export is visible to qits-trust-init env"
+else
+  fail "hook export not visible: stderr '$(cat "$tmp/hook.err")'"
+fi
+rm -f "$hookdir/10-export.sh"
+
+# A failing hook (set -e, then a failing command) does not stop the exec, does not block a later hook
+# in name order, and is reported with exactly one stderr line naming it.
+cat >"$hookdir/10-bad.sh" <<'HOOK'
+set -e
+false
+export HOOK_TEST_BAD=should_not_appear
+HOOK
+cat >"$hookdir/20-after-bad.sh" <<'HOOK'
+export HOOK_TEST_AFTER_BAD=ran
+HOOK
+hook_env=$(QITS_INIT_HOOK_DIR="$hookdir" env -u QITS_TRUST_ANCHORS sh "$init" sh -c 'echo execed; env' 2>"$tmp/hook.err")
+status=$?
+if [ "$status" = 0 ] && printf '%s\n' "$hook_env" | grep -q '^execed$' \
+  && printf '%s\n' "$hook_env" | grep -qx 'HOOK_TEST_AFTER_BAD=ran' \
+  && ! printf '%s\n' "$hook_env" | grep -q '^HOOK_TEST_BAD'; then
+  pass "a failing hook does not stop the exec, and a later hook still runs"
+else
+  fail "a failing hook stopped the exec or blocked a later hook: exit $status"
+fi
+if [ "$(wc -l <"$tmp/hook.err")" = 1 ] && grep -qF "qits-trust-init: hook $hookdir/10-bad.sh failed" "$tmp/hook.err"; then
+  pass "the failing hook is reported with exactly one stderr line naming it"
+else
+  fail "failing-hook stderr was '$(cat "$tmp/hook.err")'"
+fi
+rm -f "$hookdir/10-bad.sh" "$hookdir/20-after-bad.sh"
+
+# Name order: a later hook (by filename) sees an earlier one's export already applied. Reversed, a
+# hook named 10-a running after 20-b would overwrite instead of appending, so the exact value "a-b"
+# is only reachable in 10-a, 20-b order.
+cat >"$hookdir/10-a.sh" <<'HOOK'
+export HOOK_TEST_ORDER=a
+HOOK
+cat >"$hookdir/20-b.sh" <<'HOOK'
+export HOOK_TEST_ORDER="${HOOK_TEST_ORDER:-unset}-b"
+HOOK
+hook_env=$(QITS_INIT_HOOK_DIR="$hookdir" env -u QITS_TRUST_ANCHORS sh "$init" env 2>"$tmp/hook.err")
+if printf '%s\n' "$hook_env" | grep -qx 'HOOK_TEST_ORDER=a-b' && ! [ -s "$tmp/hook.err" ]; then
+  pass "hooks run in name order"
+else
+  fail "hooks did not run in name order: $(printf '%s\n' "$hook_env" | grep '^HOOK_TEST_ORDER='), stderr '$(cat "$tmp/hook.err")'"
+fi
+rm -f "$hookdir/10-a.sh" "$hookdir/20-b.sh"
 
 echo "test-trust ($mode): $failures failed, $skips skipped"
 [ "$failures" = 0 ]

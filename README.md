@@ -106,6 +106,33 @@ sh trust/test-trust.sh --installed                    # inside an image; the che
 The simulation sets `QITS_TRUST_DIR` and `QITS_TRUST_SYSTEM_BUNDLE`. These two variables exist only
 for the test, and they override `/etc/ssl/qits` and `/etc/ssl/certs/ca-certificates.crt`.
 
+## Init hooks
+
+Just before `qits-trust-init` execs the command it was given, it sources every `/etc/qits/init.d/*.sh`
+it finds, in name order, in its own (main) shell — sourced, not run, so a hook's `export`s reach the
+command about to be exec'd and everything that command launches (epic qits-2525, qits-2656, dossier
+page "Reaching the proxy", section "The init hook"). The motivating consumer is a hook
+`/etc/qits/init.d/50-egress.sh` that qits-workspace-oci's own work places there, to start
+`qits egress forward` and export the proxy ENV an agent container's tools need to reach outside
+resources through qits-egress — a separate repository's concern; this repository only has to carry
+the hook mechanism itself.
+
+Each hook is sourced inside a guard: it runs in a subshell of its own, so a hook that turns on
+`set -e` and then fails, or that calls `exit` explicitly, ends only that subshell, never
+`qits-trust-init` — calling `exit` from a hook is a bug (it only cuts that hook short and loses any
+export still to come), but it does not take the container down with it. The subshell's exports are
+carried back into the main shell by dumping `export -p` to a temp file just before the subshell ends,
+then sourcing that dump — plain `export` statements, nothing that can fail. A hook whose last command
+fails, directly or through its own `set -e`, is reported on stderr as one line,
+`qits-trust-init: hook <file> failed`, with every export it made in that run discarded, and the start
+goes on to the next hook and then the exec. With no `/etc/qits/init.d` (the case for every image here
+except qits-workspace-oci), behaviour is exactly as if this mechanism did not exist.
+
+`trust/test-trust.sh` proves all of it — a hook's export reaching `qits-trust-init env`, a failing
+hook not stopping the exec (and not blocking a later hook), name order, and no hook directory
+changing nothing — through `QITS_INIT_HOOK_DIR`, which overrides `/etc/qits/init.d` for the test only,
+the same way `QITS_TRUST_DIR` overrides `/etc/ssl/qits`.
+
 ## How a recipe consumes these
 
 Every recipe on the platform opens with a bare name — `image: qits/build-images/ci-base:latest` —
