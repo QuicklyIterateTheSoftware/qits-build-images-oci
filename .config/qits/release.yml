@@ -36,6 +36,11 @@
 # exact stage that is pushed, in both halves, and the release builds it before any `--output` — so a
 # ci-slot missing a tool a recipe calls fails the release and never reaches `:latest`.
 #
+# THE TRUST TEST GATES IT TOO (epic qits-2524). ci-slot's and node-browser-base's `check` targets run
+# trust/test-trust.sh --installed as a non-root uid: the /etc/ssl/qits layout, the ENV, and curl, git,
+# node (and keytool in ci-slot) trusting a throwaway CA once qits-trust-init has installed it. The
+# image directories share trust/ because every build's context is the repository root.
+#
 # REGISTRY AUTH IS THE PLATFORM'S: a `build: true` step gets `$DOCKER_CONFIG` and the run's login in
 # `$QITS_CI_REGISTRY_AUTH_CONFIG`, which the bootstrap writes to `$DOCKER_CONFIG/config.json` — the
 # file buildctl reads for the push. Nothing here logs in.
@@ -67,7 +72,8 @@ release-request:
       : "${BUILDKIT_HOST:?the platform builder is off or not injected; this step builds only through it}"
       # NOTHING IS PUBLISHED, SO THERE IS NO `--output`: buildctl solves each graph and exports
       # nothing. ci-slot is built at its pushed target and then at `check`, which runs
-      # check-tools.sh on top of it.
+      # check-tools.sh on top of it; ci-slot and node-browser-base both run trust/test-trust.sh in
+      # their `check` (epic qits-2524).
       images='ci-base maven-base userflows-base node-base node-docker-base node-browser-base vhs-base ci-slot'
       for image in $images; do
         target=''
@@ -76,8 +82,10 @@ release-request:
         buildctl build --frontend dockerfile.v0 \
           --local context=. --local dockerfile="$image" $target
       done
-      buildctl build --frontend dockerfile.v0 \
-        --local context=. --local dockerfile=ci-slot --opt target=check
+      for image in ci-slot node-browser-base; do
+        buildctl build --frontend dockerfile.v0 \
+          --local context=. --local dockerfile="$image" --opt target=check
+      done
 
 release:
   - image: qits/build-images/ci-base:latest
@@ -87,9 +95,12 @@ release:
       : "${BUILDKIT_HOST:?the platform builder is off or not injected; this step builds only through it}"
       qits_domain=${QITS_DOMAIN:?this step was told no QITS_DOMAIN}
       images='ci-base maven-base userflows-base node-base node-docker-base node-browser-base vhs-base ci-slot'
-      # THE TOOL CHECK FIRST, before anything is pushed: a ci-slot missing a tool fails here.
-      buildctl build --frontend dockerfile.v0 \
-        --local context=. --local dockerfile=ci-slot --opt target=check
+      # THE CHECKS FIRST, before anything is pushed: a ci-slot missing a tool, or either image whose
+      # trust hook does not work (trust/test-trust.sh), fails here.
+      for image in ci-slot node-browser-base; do
+        buildctl build --frontend dockerfile.v0 \
+          --local context=. --local dockerfile="$image" --opt target=check
+      done
       # `push=true` IS THE PUBLISH: each image goes from the builder straight to the registry, under
       # both names at once — the quoted `name=` is buildctl's CSV spelling of a multi-name output.
       for image in $images; do

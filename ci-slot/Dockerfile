@@ -222,6 +222,23 @@ RUN apt-get update \
         unzip \
     && rm -rf /var/lib/apt/lists/*
 
+# THE IMAGE TRUST HOOK (epic qits-2524; trust/ and the README's "Platform trust anchors"). The build
+# points the system bundle and the JDK's cacerts at /etc/ssl/qits/ (mode 0777, files 0666), seeded
+# with this image's public trust; the ENTRYPOINT below starts through qits-trust-init, which rewrites
+# them from QITS_TRUST_ANCHORS as uid 1001 — no root, no update-ca-certificates. The ENV covers the
+# tools that read a bundle path of their own instead of the system one. Late, as a small layer
+# (qits-1650), and after the JDK copy and every apt layer, any of which may rewrite the bundle; root,
+# before USER build. Run qits-trust-layout again after anything added below that reinstalls
+# ca-certificates or a JDK.
+COPY --chmod=0755 trust/qits-trust-layout trust/qits-trust-init /usr/local/bin/
+RUN qits-trust-layout
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/qits/ca-bundle.pem \
+    REQUESTS_CA_BUNDLE=/etc/ssl/qits/ca-bundle.pem \
+    PIP_CERT=/etc/ssl/qits/ca-bundle.pem \
+    SSL_CERT_FILE=/etc/ssl/qits/ca-bundle.pem \
+    CURL_CA_BUNDLE=/etc/ssl/qits/ca-bundle.pem \
+    GIT_SSL_CAINFO=/etc/ssl/qits/ca-bundle.pem
+
 # The build user, uid 1001 — the lease's `spec.user`. Passwd-backed because zonky's embedded
 # postgres calls getpwuid and initdb refuses uid 0 (maven-base). HOME is under /work so it is the
 # user's own; /work holds the run worktrees and /cache the warm git mirrors and package caches the
@@ -244,12 +261,22 @@ WORKDIR /work
 # lease spec carries no entrypoint field — and qits-ci-service hands it the bootstrap shell script
 # to run through QITS_CI_BOOTSTRAP rather than as an image argument. Exec form, no CMD: there is no
 # default to fall back to, and ci-slot-entrypoint refuses outright when the variable is unset.
+# qits-trust-init goes first (epic qits-2524): it installs QITS_TRUST_ANCHORS into the stores above,
+# then execs ci-slot-entrypoint with no arguments, as before; it never stops the start — a bad value
+# costs one stderr line and the public trust.
 COPY --chmod=0755 ci-slot/ci-slot-entrypoint /usr/local/bin/ci-slot-entrypoint
-ENTRYPOINT ["/usr/local/bin/ci-slot-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/qits-trust-init", "/usr/local/bin/ci-slot-entrypoint"]
 
 # THE TOOL CHECK, a target of its own so the release can build it from the very stage it pushes.
 # `buildctl build --opt target=check` reuses every ci-slot layer from the cache and fails when
 # check-tools.sh does — before anything is pushed. Nothing exports this stage.
+#
+# The trust test (epic qits-2524) runs here too, as `build`, the uid a lease runs: it asserts the
+# layout, the links and the ENV, then has curl, git, node and keytool trust a throwaway CA served by
+# openssl s_server once qits-trust-init installed it, and checks a malformed value still starts.
+# python3 is not in this image, so its probe reports `skip`.
 FROM ci-slot AS check
 COPY ci-slot/check-tools.sh /tmp/check-tools.sh
+COPY trust/test-trust.sh /tmp/test-trust.sh
 RUN sh /tmp/check-tools.sh
+RUN sh /tmp/test-trust.sh --installed

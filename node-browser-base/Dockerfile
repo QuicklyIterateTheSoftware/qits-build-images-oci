@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim AS node-browser-base
 
 # THE SCREENSHOT RENDERER, IN ONE PLACE. Browser screenshot tests (vitest browser mode with
 # Playwright Chromium, `toMatchScreenshot`) only match their committed baselines when they run on
@@ -85,3 +85,35 @@ RUN { echo "playwright=${PLAYWRIGHT_VERSION}"; \
 RUN mkdir -p /workspace \
     && chmod 1777 /workspace \
     && git config --system --add safe.directory '*'
+
+# THE IMAGE TRUST HOOK (epic qits-2524; trust/ and the README's "Platform trust anchors"). The build
+# points the system bundle at /etc/ssl/qits/ca-bundle.pem (directory 0777, files 0666), seeded with
+# this image's public trust, and installs qits-trust-init, which rewrites it from QITS_TRUST_ANCHORS
+# at container start under any uid. This image has no ENTRYPOINT of its own: the images built on it
+# (qits/workspace-base and the daemon images on top) start through qits-trust-init, and
+# workspace-base runs qits-trust-layout again once it has installed its JDK. The ENV covers the tools
+# that read a bundle path of their own. Last, after every apt layer, any of which may rewrite the
+# bundle.
+COPY --chmod=0755 trust/qits-trust-layout trust/qits-trust-init /usr/local/bin/
+RUN qits-trust-layout
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/qits/ca-bundle.pem \
+    REQUESTS_CA_BUNDLE=/etc/ssl/qits/ca-bundle.pem \
+    PIP_CERT=/etc/ssl/qits/ca-bundle.pem \
+    SSL_CERT_FILE=/etc/ssl/qits/ca-bundle.pem \
+    CURL_CA_BUNDLE=/etc/ssl/qits/ca-bundle.pem \
+    GIT_SSL_CAINFO=/etc/ssl/qits/ca-bundle.pem
+
+# THE TRUST TEST, a target of its own like ci-slot's `check`: the release builds it from the stage it
+# pushes, before anything is pushed, and nothing exports it. Run as `nobody`, because the init must
+# work without root: it asserts the layout and the ENV, then has curl, git and node trust a throwaway
+# CA served by openssl s_server once qits-trust-init installed it. No python3 and no JDK here, so
+# those probes report `skip`.
+FROM node-browser-base AS check
+COPY trust/test-trust.sh /tmp/test-trust.sh
+USER nobody
+RUN sh /tmp/test-trust.sh --installed
+
+# THE IMAGE IS THE LAST STAGE, unchanged: a build that names no target — the release's loop, the
+# README's, and qits-bootstrap's seed build of this file — gets node-browser-base itself, and
+# BuildKit never builds `check` for it.
+FROM node-browser-base

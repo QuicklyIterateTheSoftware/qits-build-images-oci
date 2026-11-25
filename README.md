@@ -12,9 +12,9 @@ because they are one platform surface and deliberately share one release version
 | `qits/build-images/userflows-base` | Maven plus the browser toolchain used by qits-userflows-javalib |
 | `qits/build-images/node-base` | Node and Corepack build/publish step |
 | `qits/build-images/node-docker-base` | Node build step that can also drive the host Docker daemon |
-| `qits/build-images/node-browser-base` | Node plus the pinned screenshot renderer (Playwright Chromium and fonts); the `app` QA step and the workspace image both build on it |
+| `qits/build-images/node-browser-base` | Node plus the pinned screenshot renderer (Playwright Chromium and fonts); the `app` QA step and the workspace image both build on it. Carries the [trust hook](#platform-trust-anchors) the workspace, desk and agent images start through |
 | `qits/build-images/vhs-base` | Pinned vhs/ttyd/Chromium/font stack that plays `tapes/*.tape`; the `cli-tapes` QA step and qits-maintenance's `cli-tapes` automation both build on it |
-| `qits/build-images/ci-slot` | The one CI image: every step of a run executes in it (epic qits-1481). The union of the step images above, Debian bookworm, no docker; `ci-slot/check-tools.sh` lists the commands it must carry and the release fails without them. `ENTRYPOINT` runs `/usr/local/bin/ci-slot-entrypoint`, which execs the bootstrap script qits-ci-service hands the container in `QITS_CI_BOOTSTRAP` — the lease container starts with no command override, so this is the only thing that ever runs; it exits 64 if the variable is unset. No `CMD`. |
+| `qits/build-images/ci-slot` | The one CI image: every step of a run executes in it (epic qits-1481). The union of the step images above, Debian bookworm, no docker; `ci-slot/check-tools.sh` lists the commands it must carry and the release fails without them. `ENTRYPOINT` runs `/usr/local/bin/qits-trust-init` (see [Platform trust anchors](#platform-trust-anchors)), which execs `/usr/local/bin/ci-slot-entrypoint`, which execs the bootstrap script qits-ci-service hands the container in `QITS_CI_BOOTSTRAP` — the lease container starts with no command override, so this is the only thing that ever runs; it exits 64 if the variable is unset. No `CMD`. |
 
 Every release publishes every image with the release CalVer and with `latest`. The immutable
 CalVer is the release coordinate; `latest` is the channel consumed by CI configurations. Registry
@@ -32,11 +32,18 @@ Build one image from the repository root:
 docker build -f ci-base/Dockerfile -t qits/build-images/ci-base:local .
 ```
 
-Only ci-slot reads the build context: the `ci-slot` stage copies in `ci-slot/ci-slot-entrypoint`
-(its `ENTRYPOINT`) and the `check` target on top of it copies `ci-slot/check-tools.sh`.
-`--target ci-slot` builds the image itself and `--target check` runs the tool check. Keeping the
-repository root as the context leaves room for shared scripts without changing the release
-pipeline.
+The repository root is every build's context, which is how two images share one copy of a script.
+ci-slot copies in `ci-slot/ci-slot-entrypoint` (its `ENTRYPOINT`), and both ci-slot and
+node-browser-base copy `trust/qits-trust-layout` and `trust/qits-trust-init`. Both also have a
+`check` target that the release builds before it pushes anything. ci-slot's runs
+`ci-slot/check-tools.sh` and both run `trust/test-trust.sh --installed`. In ci-slot,
+`--target ci-slot` builds the image itself. node-browser-base needs no target, because its last
+stage is the image and BuildKit skips `check` unless asked:
+
+```sh
+docker build --target check -f ci-slot/Dockerfile .
+docker build --target check -f node-browser-base/Dockerfile .
+```
 
 Running `qits/build-images/ci-slot` by hand needs `QITS_CI_BOOTSTRAP` set, since the image has no
 `CMD` and its `ENTRYPOINT` execs that variable's contents or refuses with exit 64:
@@ -44,6 +51,60 @@ Running `qits/build-images/ci-slot` by hand needs `QITS_CI_BOOTSTRAP` set, since
 ```sh
 docker run -e QITS_CI_BOOTSTRAP='echo hi' qits/build-images/ci-slot:local
 ```
+
+## Platform trust anchors
+
+The platform's own CA reaches a container as PEM in `QITS_TRUST_ANCHORS`. Workspace, desk, agent
+and ci-slot containers run as a non-root uid, so they cannot run `update-ca-certificates` at start.
+Instead, node-browser-base and ci-slot ship a two-part hook (epic qits-2524). The source is `trust/`,
+and the spec is the epic's dossier page "Image trust hook".
+
+**At build, `qits-trust-layout` runs as root.** It is idempotent. It creates `/etc/ssl/qits/` with
+mode 0777 and its files with mode 0666, and points every store at a file there:
+
+| File | Content | Linked from |
+|---|---|---|
+| `public-bundle.pem` | the image's own system bundle, copied at build and never rewritten | |
+| `ca-bundle.pem` | the public bundle plus the anchors | `/etc/ssl/certs/ca-certificates.crt` |
+| `anchors.pem` | the anchors alone, or empty | |
+| `public-cacerts` | the JDK's original cacerts, copied at build and never rewritten (ci-slot) | |
+| `java-cacerts` | the public cacerts plus each anchor, as alias `qits-platform-ca-<12 hex of sha256(DER)>` | `$JAVA_HOME/lib/security/cacerts` (ci-slot) |
+
+A tool that reads a bundle path of its own is covered by static ENV in both images.
+`NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `PIP_CERT`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE` and
+`GIT_SSL_CAINFO` all equal `/etc/ssl/qits/ca-bundle.pem`. Because the ENV is in the image, a
+`docker exec` shell sees the same trust as the entrypoint's children.
+
+Run the layout again after anything that reinstalls `ca-certificates` or a JDK. qits-workspace-oci
+does this once it has installed its JDK. `update-ca-certificates` turns the linked bundle back into a
+regular file, and the next layout run re-copies it.
+
+**At start, `qits-trust-init <command> [args...]` runs as any uid.** It writes the CERTIFICATE blocks
+of `QITS_TRUST_ANCHORS` into the three files. Each file is written under a temporary name and then
+renamed, so a reader never sees half a store. Then it `exec`s the command. When the variable is
+unset or empty, it resets the files to the public copies. It never stops a start: any failure prints
+one line, `qits-trust-init: <what>; continuing with public trust`, to stderr. It then leaves public
+trust in place and still execs the command. One anchor takes about half a second, most of it
+keytool's JVM start; the budget is 2 s.
+
+ci-slot starts through it: `ENTRYPOINT ["/usr/local/bin/qits-trust-init",
+"/usr/local/bin/ci-slot-entrypoint"]`. node-browser-base has no entrypoint of its own. The images
+built on it put `qits-trust-init` in front of theirs.
+
+**The test is `trust/test-trust.sh`.** It needs no root and no docker. It makes a throwaway P-384 CA
+and a leaf for `trust.test`, and serves the leaf with `openssl s_server`. It then checks that curl,
+git, node `fetch`, python3 `urllib`, keytool and a JVM all refuse the CA before the init and trust it
+after. It also checks that a start without anchors is public trust, byte for byte, and that a
+malformed value still execs with its one stderr line. Run it from the repository root before pushing
+a change to `trust/`:
+
+```sh
+TRUST_TEST_STRICT=1 sh trust/test-trust.sh            # simulates /etc/ssl/qits in a temp dir
+sh trust/test-trust.sh --installed                    # inside an image; the check targets run this
+```
+
+The simulation sets `QITS_TRUST_DIR` and `QITS_TRUST_SYSTEM_BUNDLE`. These two variables exist only
+for the test, and they override `/etc/ssl/qits` and `/etc/ssl/certs/ca-certificates.crt`.
 
 ## How a recipe consumes these
 
