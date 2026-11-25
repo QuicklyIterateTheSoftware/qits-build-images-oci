@@ -1,0 +1,155 @@
+#!/bin/sh
+# qits-trust-init <command> [args...] (epic qits-2524, "image trust hook"): CONTAINER START, ANY UID.
+#
+# Rewrites the stores qits-trust-layout prepared in /etc/ssl/qits/ from QITS_TRUST_ANCHORS (PEM; only
+# its CERTIFICATE blocks count), then execs the command:
+#
+#   anchors.pem   the anchors alone
+#   ca-bundle.pem public-bundle.pem + the anchors       (every OpenSSL/curl/git/Python/Node reader)
+#   java-cacerts  public-cacerts + each anchor under alias qits-platform-ca-<sha256(DER), 12 hex>
+#                 (only where the layout made one and keytool is found)
+#
+# Unset or empty QITS_TRUST_ANCHORS resets all three to the public copies. Each file is written to a
+# temporary name and renamed over the old one, so a reader never sees half a store.
+#
+# IT NEVER STOPS A CONTAINER FROM STARTING. Any failure prints ONE stderr line,
+# `qits-trust-init: <what>; continuing with public trust`, puts the public copies back (best effort)
+# and still execs the command. With no command it only applies the trust and exits 0.
+#
+# QITS_TRUST_DIR overrides /etc/ssl/qits, for trust/test-trust.sh only. The source of truth is
+# trust/ in qits-build-images-oci.
+
+dir=${QITS_TRUST_DIR:-/etc/ssl/qits}
+work=''
+reason=''
+
+fail() {
+  reason=$1
+  return 1
+}
+
+cleanup() {
+  if [ -n "$work" ]; then rm -rf "$work"; fi
+  rm -f "$dir/ca-bundle.pem.tmp.$$" "$dir/java-cacerts.tmp.$$" "$dir/anchors.pem.tmp.$$" 2>/dev/null
+}
+
+# install <source> <name>: copy (or move, with -m) <source> to $dir/<name> through a temporary name.
+install_file() {
+  tmp="$dir/$2.tmp.$$"
+  cp "$1" "$tmp" 2>/dev/null || return 1
+  chmod 0666 "$tmp" 2>/dev/null
+  mv -f "$tmp" "$dir/$2" 2>/dev/null
+}
+
+reset_public() {
+  if [ -f "$dir/public-bundle.pem" ]; then install_file "$dir/public-bundle.pem" ca-bundle.pem; fi
+  if [ -f "$dir/public-cacerts" ] && [ -e "$dir/java-cacerts" ]; then
+    install_file "$dir/public-cacerts" java-cacerts
+  fi
+  if [ -e "$dir/anchors.pem" ]; then install_file /dev/null anchors.pem; fi
+}
+
+find_keytool() {
+  if command -v keytool >/dev/null 2>&1; then
+    command -v keytool
+  elif [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/keytool" ]; then
+    echo "$JAVA_HOME/bin/keytool"
+  else
+    return 1
+  fi
+}
+
+# The DER of a PEM certificate, on stdout: openssl where there is one (both images carry it, as a
+# dependency of ca-certificates), else the base64 body decoded by coreutils.
+cert_der() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl x509 -in "$1" -outform DER 2>/dev/null
+  else
+    sed -e '/-----/d' "$1" | base64 -d 2>/dev/null
+  fi
+}
+
+apply() {
+  [ -f "$dir/public-bundle.pem" ] || fail "$dir/public-bundle.pem is missing (no qits-trust-layout in this image?)" || return 1
+  [ -w "$dir" ] || fail "$dir is not writable by uid $(id -u)" || return 1
+  work=$(mktemp -d "$dir/.init.XXXXXX" 2>/dev/null) || fail "cannot create a work directory in $dir" || return 1
+
+  # One file per CERTIFICATE block; indentation and CRs (a YAML or Windows-edited value) are dropped.
+  count=$(printf '%s\n' "$QITS_TRUST_ANCHORS" | tr -d '\r' | awk -v out="$work/anchor-" '
+    { sub(/^[ \t]+/, ""); sub(/[ \t]+$/, "") }
+    $0 == "-----BEGIN CERTIFICATE-----" { n++; file = out n ".pem"; inside = 1 }
+    inside { print > file }
+    inside && $0 == "-----END CERTIFICATE-----" { inside = 0; close(file) }
+    END { print n + 0 }') || fail "cannot split QITS_TRUST_ANCHORS" || return 1
+  [ "$count" -gt 0 ] || fail "QITS_TRUST_ANCHORS holds no PEM certificate" || return 1
+
+  # Every block must parse: one bad certificate in a CA file makes OpenSSL refuse the whole file,
+  # which would take public trust down with it. The bundle gets each anchor's canonical PEM.
+  true > "$work/anchors.pem"
+  i=1
+  while [ "$i" -le "$count" ]; do
+    anchor="$work/anchor-$i.pem"
+    cert_der "$anchor" > "$work/anchor-$i.der" && [ -s "$work/anchor-$i.der" ] \
+      || fail "certificate $i of $count in QITS_TRUST_ANCHORS does not parse" || return 1
+    if command -v openssl >/dev/null 2>&1; then
+      openssl x509 -in "$anchor" -outform PEM >> "$work/anchors.pem" 2>/dev/null \
+        || fail "certificate $i of $count in QITS_TRUST_ANCHORS does not parse" || return 1
+    else
+      cat "$anchor" >> "$work/anchors.pem"
+    fi
+    i=$((i + 1))
+  done
+
+  { cat "$dir/public-bundle.pem" && echo && cat "$work/anchors.pem"; } > "$work/ca-bundle.pem" \
+    || fail "cannot assemble ca-bundle.pem" || return 1
+
+  # The JDK store, where the layout made one and there is a keytool to write it (no keytool, no JVM
+  # to read it either: it stays public): built from the public copy in the work directory and
+  # renamed into place only once every anchor is in.
+  if [ -e "$dir/java-cacerts" ] && [ -f "$dir/public-cacerts" ] && keytool=$(find_keytool); then
+    cp "$dir/public-cacerts" "$work/java-cacerts" || fail "cannot copy public-cacerts" || return 1
+    imported=' '
+    i=1
+    while [ "$i" -le "$count" ]; do
+      alias="qits-platform-ca-$(sha256sum < "$work/anchor-$i.der" | cut -c1-12)"
+      case "$imported" in
+        *" $alias "*) ;; # the same certificate twice
+        *)
+          output=$("$keytool" -importcert -noprompt -storepass changeit \
+              -keystore "$work/java-cacerts" -alias "$alias" -file "$work/anchor-$i.pem" 2>&1) \
+            || fail "keytool could not import certificate $i of $count ($(printf '%s' "$output" | tr '\n' ' ' | cut -c1-160))" \
+            || return 1
+          imported="$imported$alias "
+          ;;
+      esac
+      i=$((i + 1))
+    done
+    install_file "$work/java-cacerts" java-cacerts || fail "cannot replace $dir/java-cacerts" || return 1
+  elif [ -e "$dir/java-cacerts" ] && [ -f "$dir/public-cacerts" ]; then
+    install_file "$dir/public-cacerts" java-cacerts || fail "cannot reset $dir/java-cacerts" || return 1
+  fi
+
+  install_file "$work/ca-bundle.pem" ca-bundle.pem || fail "cannot replace $dir/ca-bundle.pem" || return 1
+  install_file "$work/anchors.pem" anchors.pem || fail "cannot replace $dir/anchors.pem" || return 1
+  return 0
+}
+
+# All of it in a SUBSHELL, so that nothing in it — not even a shell error that would end a
+# non-interactive sh — can keep this process from reaching the exec below.
+(
+  if [ -n "${QITS_TRUST_ANCHORS:-}" ]; then
+    if ! apply; then
+      echo "qits-trust-init: $reason; continuing with public trust" >&2
+      reset_public 2>/dev/null
+    fi
+  elif [ -d "$dir" ]; then
+    # No anchors: the public copies, so a reused filesystem never keeps an earlier start's anchors.
+    # Nothing to report when it cannot (a read-only root, say): what is there is the public trust or
+    # what an earlier start wrote, and a start without anchors stays as quiet as before the hook.
+    reset_public 2>/dev/null
+  fi
+  cleanup 2>/dev/null
+)
+
+if [ "$#" -eq 0 ]; then exit 0; fi
+exec "$@"

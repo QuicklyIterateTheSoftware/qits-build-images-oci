@@ -1,0 +1,66 @@
+#!/bin/sh
+# qits-trust-layout (epic qits-2524, "image trust hook"): BUILD TIME, AS ROOT, IDEMPOTENT.
+#
+# Points every trust store a tool reads at a file in /etc/ssl/qits/, which is mode 0777 with files
+# mode 0666, so that qits-trust-init can rewrite those stores at container start under ANY uid —
+# workspace, desk, agent and ci-slot containers are non-root and cannot run update-ca-certificates.
+# The files are seeded with the image's own public trust, so an image started without
+# QITS_TRUST_ANCHORS behaves exactly as before.
+#
+#   /etc/ssl/qits/public-bundle.pem  a copy of the system bundle, taken here; never rewritten
+#   /etc/ssl/qits/ca-bundle.pem      what /etc/ssl/certs/ca-certificates.crt now links to
+#   /etc/ssl/qits/anchors.pem        the platform anchors alone; empty until qits-trust-init
+#   /etc/ssl/qits/public-cacerts     a copy of the JDK's cacerts, taken here; never rewritten
+#   /etc/ssl/qits/java-cacerts       what $JAVA_HOME/lib/security/cacerts now links to
+#
+# RUN IT AGAIN after anything that reinstalls ca-certificates or a JDK: update-ca-certificates
+# replaces the symlinked bundle with a regular file again, and a run here then re-copies it.
+#
+# QITS_TRUST_DIR and QITS_TRUST_SYSTEM_BUNDLE override the two fixed paths, for trust/test-trust.sh
+# only; an image never sets them. The source of truth is trust/ in qits-build-images-oci.
+set -eu
+
+dir=${QITS_TRUST_DIR:-/etc/ssl/qits}
+system_bundle=${QITS_TRUST_SYSTEM_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}
+
+mkdir -p "$dir"
+chmod 0777 "$dir"
+
+# Is $1 already ours, i.e. does it resolve to $2?
+is_ours() {
+  [ "$(readlink -f "$1")" = "$(readlink -f "$2")" ]
+}
+
+# THE SYSTEM BUNDLE. A regular file (fresh, or rewritten by update-ca-certificates) or a symlink to
+# somebody else's file is copied and then replaced by our link; our own link is left alone.
+if is_ours "$system_bundle" "$dir/ca-bundle.pem"; then
+  echo "qits-trust-layout: $system_bundle already links to $dir/ca-bundle.pem"
+elif [ -f "$system_bundle" ]; then
+  cp "$system_bundle" "$dir/public-bundle.pem"
+  cp "$system_bundle" "$dir/ca-bundle.pem"
+  ln -sfn "$dir/ca-bundle.pem" "$system_bundle"
+  echo "qits-trust-layout: $system_bundle -> $dir/ca-bundle.pem"
+else
+  echo "qits-trust-layout: $system_bundle does not exist; install ca-certificates first" >&2
+  exit 1
+fi
+
+# THE JDK STORE, where there is a JDK. The link chain is resolved first and its FINAL file is the one
+# replaced (a Debian/Adoptium JDK links lib/security/cacerts to /etc/ssl/certs/<x>/cacerts), so every
+# name in the chain keeps resolving, now to ours.
+if [ -n "${JAVA_HOME:-}" ] && [ -e "$JAVA_HOME/lib/security/cacerts" ]; then
+  if is_ours "$JAVA_HOME/lib/security/cacerts" "$dir/java-cacerts"; then
+    echo "qits-trust-layout: $JAVA_HOME/lib/security/cacerts already links to $dir/java-cacerts"
+  else
+    cacerts=$(readlink -f "$JAVA_HOME/lib/security/cacerts")
+    cp "$cacerts" "$dir/public-cacerts"
+    cp "$cacerts" "$dir/java-cacerts"
+    ln -sfn "$dir/java-cacerts" "$cacerts"
+    echo "qits-trust-layout: $cacerts -> $dir/java-cacerts"
+  fi
+fi
+
+touch "$dir/anchors.pem"
+for file in public-bundle.pem ca-bundle.pem anchors.pem public-cacerts java-cacerts; do
+  if [ -e "$dir/$file" ]; then chmod 0666 "$dir/$file"; fi
+done
