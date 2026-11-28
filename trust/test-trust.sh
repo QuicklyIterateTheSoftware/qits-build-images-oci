@@ -433,87 +433,96 @@ if [ "$(stat -c %a "$QITS_RUN_DIR" 2>/dev/null)" = 1777 ]; then
 else
   fail "$QITS_RUN_DIR is $(stat -c %a "$QITS_RUN_DIR" 2>/dev/null || echo missing), not 1777"
 fi
+# Which hook: this directory's in a simulation, the installed one in an image. Only node-browser-base
+# (and the images on it) installs the hook; ci-slot runs this test too and carries none, by design
+# (CI slots hold no workload certificate), so there the checks below do not apply and are not counted
+# as skips: TRUST_TEST_STRICT would otherwise fail an image for something it should not have.
+# QITS_WORKLOAD_HOOK names another file, for running the absent case in a simulation.
 if [ "$mode" = simulate ]; then
-  workload_hook="$here/40-workload-certificate.sh"
+  workload_hook=${QITS_WORKLOAD_HOOK:-$here/40-workload-certificate.sh}
 else
-  workload_hook=/etc/qits/init.d/40-workload-certificate.sh
+  workload_hook=${QITS_WORKLOAD_HOOK:-/etc/qits/init.d/40-workload-certificate.sh}
 fi
-whookdir="$tmp/init.d-workload"
-mkdir -p "$whookdir" "$tmp/fakebin" "$tmp/fakebin-old"
-cp "$workload_hook" "$whookdir/40-workload-certificate.sh" 2>/dev/null || fail "no $workload_hook"
-cat >"$tmp/fakebin/qits" <<FAKE
+if ! [ -f "$workload_hook" ]; then
+  echo "n/a   no $workload_hook in this image (ci-slot carries none): the workload hook checks do not apply"
+else
+  whookdir="$tmp/init.d-workload"
+  mkdir -p "$whookdir" "$tmp/fakebin" "$tmp/fakebin-old"
+  cp "$workload_hook" "$whookdir/40-workload-certificate.sh"
+  cat >"$tmp/fakebin/qits" <<FAKE
 #!/bin/sh
 if [ "\$3" = --help ]; then echo "Usage: qits certificate keep [-hV] [--dir=<dir>]"; exit 0; fi
 echo "\$*" > "$tmp/qits-started"
 FAKE
-# An old qits answers `certificate keep --help` with its top-level usage and exit 0, as picocli does.
-cat >"$tmp/fakebin-old/qits" <<'FAKE'
+  # An old qits answers `certificate keep --help` with its top-level usage and exit 0, as picocli does.
+  cat >"$tmp/fakebin-old/qits" <<'FAKE'
 #!/bin/sh
 echo "Unmatched arguments from index 0: 'certificate', 'keep'" >&2
 echo "Usage: qits [-hV] [COMMAND]"
 exit 0
 FAKE
-chmod +x "$tmp/fakebin/qits" "$tmp/fakebin-old/qits"
-wdir="$tmp/run-workload/workload"
-started_within() {
-  i=0
-  while [ "$i" -lt 50 ]; do
-    [ -s "$tmp/qits-started" ] && return 0
-    sleep 0.1
-    i=$((i + 1))
-  done
-  return 1
-}
+  chmod +x "$tmp/fakebin/qits" "$tmp/fakebin-old/qits"
+  wdir="$tmp/run-workload/workload"
+  started_within() {
+    i=0
+    while [ "$i" -lt 50 ]; do
+      [ -s "$tmp/qits-started" ] && return 0
+      sleep 0.1
+      i=$((i + 1))
+    done
+    return 1
+  }
 
-# A token and a qits with `certificate keep`: keep starts in the background, and the exec'd command
-# sees QITS_WORKLOAD_CERT_DIR.
-rm -f "$tmp/qits-started"
-hook_env=$(PATH="$tmp/fakebin:$PATH" QITS_TOKEN=qits_tok_test QITS_WORKLOAD_CERT_DIR="$wdir" \
-  QITS_INIT_HOOK_DIR="$whookdir" env -u QITS_TRUST_ANCHORS sh "$init" env 2>"$tmp/hook.err")
-if printf '%s\n' "$hook_env" | grep -qx "QITS_WORKLOAD_CERT_DIR=$wdir" && started_within \
-  && [ "$(cat "$tmp/qits-started")" = "certificate keep --dir $wdir" ] && ! [ -s "$tmp/hook.err" ]; then
-  pass "with a token and qits, the hook starts qits certificate keep and exports QITS_WORKLOAD_CERT_DIR"
-else
-  fail "workload hook: started '$(cat "$tmp/qits-started" 2>/dev/null)', stderr '$(cat "$tmp/hook.err")'"
-fi
-
-# No token: nothing started, nothing exported, nothing said.
-rm -f "$tmp/qits-started"
-hook_env=$(PATH="$tmp/fakebin:$PATH" QITS_INIT_HOOK_DIR="$whookdir" \
-  env -u QITS_TRUST_ANCHORS -u QITS_TOKEN -u QITS_WORKLOAD_CERT_DIR sh "$init" sh -c 'echo execed; env' 2>"$tmp/hook.err")
-sleep 0.3
-if printf '%s\n' "$hook_env" | grep -q '^execed$' && ! printf '%s\n' "$hook_env" | grep -q '^QITS_WORKLOAD_CERT_DIR=' \
-  && ! [ -e "$tmp/qits-started" ] && ! [ -s "$tmp/hook.err" ]; then
-  pass "without a token the workload hook does nothing"
-else
-  fail "workload hook without a token: stderr '$(cat "$tmp/hook.err")'"
-fi
-
-# A token but no qits on PATH: the same.
-hook_env=$(PATH="/usr/bin:/bin" QITS_TOKEN=qits_tok_test QITS_INIT_HOOK_DIR="$whookdir" \
-  env -u QITS_TRUST_ANCHORS -u QITS_WORKLOAD_CERT_DIR sh "$init" sh -c 'echo execed; env' 2>"$tmp/hook.err")
-if ! PATH="/usr/bin:/bin" command -v qits >/dev/null 2>&1; then
-  if printf '%s\n' "$hook_env" | grep -q '^execed$' && ! [ -s "$tmp/hook.err" ]; then
-    pass "without a qits CLI the workload hook does nothing and the start goes on"
+  # A token and a qits with `certificate keep`: keep starts in the background, and the exec'd command
+  # sees QITS_WORKLOAD_CERT_DIR.
+  rm -f "$tmp/qits-started"
+  hook_env=$(PATH="$tmp/fakebin:$PATH" QITS_TOKEN=qits_tok_test QITS_WORKLOAD_CERT_DIR="$wdir" \
+    QITS_INIT_HOOK_DIR="$whookdir" env -u QITS_TRUST_ANCHORS sh "$init" env 2>"$tmp/hook.err")
+  if printf '%s\n' "$hook_env" | grep -qx "QITS_WORKLOAD_CERT_DIR=$wdir" && started_within \
+    && [ "$(cat "$tmp/qits-started")" = "certificate keep --dir $wdir" ] && ! [ -s "$tmp/hook.err" ]; then
+    pass "with a token and qits, the hook starts qits certificate keep and exports QITS_WORKLOAD_CERT_DIR"
   else
-    fail "workload hook without qits: stderr '$(cat "$tmp/hook.err")'"
+    fail "workload hook: started '$(cat "$tmp/qits-started" 2>/dev/null)', stderr '$(cat "$tmp/hook.err")'"
   fi
-else
-  skip "a qits on /usr/bin or /bin: cannot test a container without one here"
-fi
 
-# A qits too old for `certificate keep`: one stderr line, no export, the exec still happens.
-hook_env=$(PATH="$tmp/fakebin-old:$PATH" QITS_TOKEN=qits_tok_test QITS_INIT_HOOK_DIR="$whookdir" \
-  env -u QITS_TRUST_ANCHORS -u QITS_WORKLOAD_CERT_DIR sh "$init" sh -c 'echo execed; env' 2>"$tmp/hook.err")
-status=$?
-if [ "$status" = 0 ] && printf '%s\n' "$hook_env" | grep -q '^execed$' \
-  && ! printf '%s\n' "$hook_env" | grep -q '^QITS_WORKLOAD_CERT_DIR=' && [ "$(wc -l <"$tmp/hook.err")" = 1 ] \
-  && grep -q "^qits-workload-certificate: .*; continuing without a workload certificate$" "$tmp/hook.err"; then
-  pass "a qits without certificate keep prints one line and the start goes on"
-else
-  fail "workload hook with an old qits: exit $status, stderr '$(cat "$tmp/hook.err")'"
+  # No token: nothing started, nothing exported, nothing said.
+  rm -f "$tmp/qits-started"
+  hook_env=$(PATH="$tmp/fakebin:$PATH" QITS_INIT_HOOK_DIR="$whookdir" \
+    env -u QITS_TRUST_ANCHORS -u QITS_TOKEN -u QITS_WORKLOAD_CERT_DIR sh "$init" sh -c 'echo execed; env' 2>"$tmp/hook.err")
+  sleep 0.3
+  if printf '%s\n' "$hook_env" | grep -q '^execed$' && ! printf '%s\n' "$hook_env" | grep -q '^QITS_WORKLOAD_CERT_DIR=' \
+    && ! [ -e "$tmp/qits-started" ] && ! [ -s "$tmp/hook.err" ]; then
+    pass "without a token the workload hook does nothing"
+  else
+    fail "workload hook without a token: stderr '$(cat "$tmp/hook.err")'"
+  fi
+
+  # A token but no qits on PATH: the same.
+  hook_env=$(PATH="/usr/bin:/bin" QITS_TOKEN=qits_tok_test QITS_INIT_HOOK_DIR="$whookdir" \
+    env -u QITS_TRUST_ANCHORS -u QITS_WORKLOAD_CERT_DIR sh "$init" sh -c 'echo execed; env' 2>"$tmp/hook.err")
+  if ! PATH="/usr/bin:/bin" command -v qits >/dev/null 2>&1; then
+    if printf '%s\n' "$hook_env" | grep -q '^execed$' && ! [ -s "$tmp/hook.err" ]; then
+      pass "without a qits CLI the workload hook does nothing and the start goes on"
+    else
+      fail "workload hook without qits: stderr '$(cat "$tmp/hook.err")'"
+    fi
+  else
+    skip "a qits on /usr/bin or /bin: cannot test a container without one here"
+  fi
+
+  # A qits too old for `certificate keep`: one stderr line, no export, the exec still happens.
+  hook_env=$(PATH="$tmp/fakebin-old:$PATH" QITS_TOKEN=qits_tok_test QITS_INIT_HOOK_DIR="$whookdir" \
+    env -u QITS_TRUST_ANCHORS -u QITS_WORKLOAD_CERT_DIR sh "$init" sh -c 'echo execed; env' 2>"$tmp/hook.err")
+  status=$?
+  if [ "$status" = 0 ] && printf '%s\n' "$hook_env" | grep -q '^execed$' \
+    && ! printf '%s\n' "$hook_env" | grep -q '^QITS_WORKLOAD_CERT_DIR=' && [ "$(wc -l <"$tmp/hook.err")" = 1 ] \
+    && grep -q "^qits-workload-certificate: .*; continuing without a workload certificate$" "$tmp/hook.err"; then
+    pass "a qits without certificate keep prints one line and the start goes on"
+  else
+    fail "workload hook with an old qits: exit $status, stderr '$(cat "$tmp/hook.err")'"
+  fi
+  rm -rf "$whookdir"
 fi
-rm -rf "$whookdir"
 
 echo "test-trust ($mode): $failures failed, $skips skipped"
 [ "$failures" = 0 ]
