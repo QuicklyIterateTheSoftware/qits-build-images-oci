@@ -60,6 +60,14 @@ if [ -n "${JAVA_HOME:-}" ] && [ -e "$JAVA_HOME/lib/security/cacerts" ]; then
   fi
 fi
 
+# THE WORKLOAD CERTIFICATE'S PARENT (epic qits-2626, qits-2762): /run/qits, mode 1777, so the
+# init.d hook's `qits certificate keep` can create /run/qits/workload as whatever uid the container
+# runs, owned by that uid and 0700 — a directory made here would be root's, and the CLI could not
+# make it private. QITS_RUN_DIR overrides it, for trust/test-trust.sh only.
+run_dir=${QITS_RUN_DIR:-/run/qits}
+mkdir -p "$run_dir"
+chmod 1777 "$run_dir"
+
 touch "$dir/anchors.pem"
 for file in public-bundle.pem ca-bundle.pem anchors.pem public-cacerts java-cacerts; do
   if [ -e "$dir/$file" ]; then chmod 0666 "$dir/$file"; fi

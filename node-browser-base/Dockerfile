@@ -96,6 +96,11 @@ RUN mkdir -p /workspace \
 # bundle.
 COPY --chmod=0755 trust/qits-trust-layout trust/qits-trust-init /usr/local/bin/
 RUN qits-trust-layout
+# THE WORKLOAD CERTIFICATE HOOK (epic qits-2626, qits-2762): sourced by qits-trust-init at start, it
+# runs `qits certificate keep` in the background when the container holds QITS_TOKEN and a qits CLI
+# (the agent, desk and workspace images put both in), and does nothing otherwise. The layout above
+# made /run/qits 1777 for it.
+COPY --chmod=0644 trust/40-workload-certificate.sh /etc/qits/init.d/40-workload-certificate.sh
 ENV NODE_EXTRA_CA_CERTS=/etc/ssl/qits/ca-bundle.pem \
     REQUESTS_CA_BUNDLE=/etc/ssl/qits/ca-bundle.pem \
     PIP_CERT=/etc/ssl/qits/ca-bundle.pem \

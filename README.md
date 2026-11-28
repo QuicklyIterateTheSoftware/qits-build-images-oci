@@ -125,8 +125,30 @@ carried back into the main shell by dumping `export -p` to a temp file just befo
 then sourcing that dump — plain `export` statements, nothing that can fail. A hook whose last command
 fails, directly or through its own `set -e`, is reported on stderr as one line,
 `qits-trust-init: hook <file> failed`, with every export it made in that run discarded, and the start
-goes on to the next hook and then the exec. With no `/etc/qits/init.d` (the case for every image here
-except qits-workspace-oci), behaviour is exactly as if this mechanism did not exist.
+goes on to the next hook and then the exec. With no `/etc/qits/init.d`, behaviour is exactly as if
+this mechanism did not exist.
+
+### The workload certificate hook (`40-workload-certificate.sh`, qits-2762)
+
+`node-browser-base` (and so every image on it: qits/workspace-base, the agent, desk and workspace
+containers) carries `/etc/qits/init.d/40-workload-certificate.sh` (epic qits-2626). When the
+container holds `QITS_TOKEN` and a `qits` CLI that has `certificate keep`, it starts `qits
+certificate keep --dir $QITS_WORKLOAD_CERT_DIR` in the background and exports
+`QITS_WORKLOAD_CERT_DIR` (default `/run/qits/workload`): `key.pem` (0600), `cert.pem` and
+`chain.pem` appear within seconds, name the token's principal (mostly `project:<id>`), and are
+renewed at 2/3 of their day for as long as the container runs. The key is made in the container and
+never leaves it.
+
+- **Otherwise it does nothing**: no token (a daemon image on its service client), no qits, or a
+  qits too old to know the command — the last says so in one stderr line, `qits-workload-certificate:
+  …; continuing without a workload certificate`. It never stops a start.
+- **`/run/qits` is 1777**, made by `qits-trust-layout`, so `keep`, as whatever uid the container runs,
+  creates `/run/qits/workload` itself, owned by that uid and 0700. A directory made at build time would
+  be root's, and the CLI could not make it private.
+- `keep` logs to the container's stderr itself: one line per certificate, one per failure streak.
+- `trust/test-trust.sh` proves it with a fake `qits` on PATH: started with the token and exporting the
+  directory, nothing without a token or a CLI, one line and the start going on with an old CLI, and
+  `/run/qits` 1777 (`QITS_RUN_DIR` overrides it in the simulation).
 
 `trust/test-trust.sh` proves all of it — a hook's export reaching `qits-trust-init env`, a failing
 hook not stopping the exec (and not blocking a later hook), name order, and no hook directory
