@@ -101,6 +101,9 @@ RUN qits-trust-layout
 # (the agent, desk and workspace images put both in), and does nothing otherwise. The layout above
 # made /run/qits 1777 for it.
 COPY --chmod=0644 trust/40-workload-certificate.sh /etc/qits/init.d/40-workload-certificate.sh
+# COPY --chmod gives the directories it creates the file's mode too (0644: no x), and a non-root
+# qits-trust-init could then list the hook but not open it, so the hook never ran. 0755 restores them.
+RUN chmod 0755 /etc/qits /etc/qits/init.d
 ENV NODE_EXTRA_CA_CERTS=/etc/ssl/qits/ca-bundle.pem \
     REQUESTS_CA_BUNDLE=/etc/ssl/qits/ca-bundle.pem \
     PIP_CERT=/etc/ssl/qits/ca-bundle.pem \

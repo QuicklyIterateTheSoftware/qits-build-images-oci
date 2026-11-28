@@ -443,7 +443,11 @@ if [ "$mode" = simulate ]; then
 else
   workload_hook=${QITS_WORKLOAD_HOOK:-/etc/qits/init.d/40-workload-certificate.sh}
 fi
-if ! [ -f "$workload_hook" ]; then
+if ! [ -f "$workload_hook" ] && ls -a "$(dirname "$workload_hook")" 2>/dev/null | grep -qx "$(basename "$workload_hook")"; then
+  # Listed but not reachable: a directory without x for this uid (COPY --chmod=0644 made one), so
+  # qits-trust-init would see the hook's name and never run it.
+  fail "$workload_hook is installed but uid $(id -u) cannot reach it (is $(dirname "$workload_hook") missing x?)"
+elif ! [ -f "$workload_hook" ]; then
   echo "n/a   no $workload_hook in this image (ci-slot carries none): the workload hook checks do not apply"
 else
   whookdir="$tmp/init.d-workload"
